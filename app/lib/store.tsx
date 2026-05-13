@@ -221,16 +221,18 @@ function getMonthStart(): string {
 }
 
 /**
- * 매월 초 기준으로 오래된 데이터를 자동 삭제한다.
- * - 오늘만 숙제(isDaily=false): 이번 달 이전 항목 삭제
+ * 오래된 데이터를 자동 삭제한다.
+ * - 오늘만 숙제(isDaily=false): 오늘 이전(어제 포함) 항목 삭제 → 매일 초기화
  * - 학습 세션: 이번 달 이전 항목 삭제
  * - 매일 숙제(isDaily=true): 영구 보존 (반복 템플릿)
  */
 async function cleanupOldData(loadedData: AppData): Promise<AppData> {
   const monthStart = getMonthStart();
+  const today = new Date().toISOString().split('T')[0];
 
+  // 오늘만 숙제: 오늘 이전에 만들어진 항목은 모두 삭제
   const oldOneTimeIds = loadedData.homework
-    .filter(h => !h.isDaily && h.createdAt.split('T')[0] < monthStart)
+    .filter(h => !h.isDaily && h.createdAt.split('T')[0] < today)
     .map(h => h.id);
 
   const oldSessionIds = loadedData.sessions
@@ -292,10 +294,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const fallback: AppData = { ...defaultData, ...JSON.parse(stored) };
             // localStorage 폴백에서도 오래된 데이터 정리 (DB 삭제 없이 메모리만)
             const monthStart = getMonthStart();
+            const todayStr = new Date().toISOString().split('T')[0];
             setData({
               ...fallback,
               homework: fallback.homework.filter(
-                h => h.isDaily || h.createdAt.split('T')[0] >= monthStart
+                h => h.isDaily || h.createdAt.split('T')[0] >= todayStr
               ),
               sessions: fallback.sessions.filter(s => s.date >= monthStart),
             });
