@@ -7,6 +7,7 @@ import type { HomeworkItem, StudentId } from './lib/types';
 
 const POINT_DAILY = 500;    // 매일 숙제: 전체 완료일 +500 / 지난 미완료일 -500
 const POINT_ONEDAY = 300;   // 오늘만 숙제: 해당 날 전부 완료 시 +300
+const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
 
 interface PointsBreakdown {
   daily: number;    // 매일 숙제 포인트 합계
@@ -33,7 +34,13 @@ function calcMonthlyPoints(studentId: StudentId, homework: HomeworkItem[]): Poin
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
       // 이 날짜 기준으로 이미 등록된 숙제만 집계 (등록일 <= 해당 날짜)
-      const activeDailyHw = dailyHw.filter(hw => hw.createdAt.split('T')[0] <= dateStr);
+      const dayLabel = DAY_LABELS[new Date(dateStr).getDay()];
+      const activeDailyHw = dailyHw.filter(hw => {
+        if (hw.createdAt.split('T')[0] > dateStr) return false;
+        // 요일 필터: '매일' 또는 해당 요일 포함 시 활성
+        if (hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')) return true;
+        return hw.scheduledDays.includes(dayLabel);
+      });
       if (activeDailyHw.length === 0) continue;
 
       const pending = activeDailyHw.filter(hw => !isDoneOn(hw, dateStr)).length;

@@ -15,16 +15,31 @@ export default function DashboardPage() {
 
   if (!student) return null;
 
-  const today = new Date().toISOString().split('T')[0];
+  const todayDate = new Date();
+  const today = todayDate.toISOString().split('T')[0];
+  const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
+  const todayLabel = DAY_LABELS[todayDate.getDay()];
+
+  function formatScheduledDays(days: string[]): string {
+    if (days.length === 0 || days.includes('매일')) return '매일';
+    return days.join('·');
+  }
+
+  // 오늘 표시해야 하는 숙제인지 판단 (요일 필터 적용)
+  function isScheduledToday(h: typeof homework[number]): boolean {
+    if (!h.isDaily) return true;
+    if (h.scheduledDays.length === 0 || h.scheduledDays.includes('매일')) return true;
+    return h.scheduledDays.includes(todayLabel);
+  }
 
   function isDone(h: typeof homework[number]) {
     return h.isDaily ? h.completedDate === today : h.completed;
   }
 
-  const pendingHw = homework.filter(h => !isDone(h));
-  const completedHw = homework.filter(h => isDone(h));
+  const todayHomework = homework.filter(h => isScheduledToday(h));
+  const pendingHw = todayHomework.filter(h => !isDone(h));
+  const completedHw = todayHomework.filter(h => isDone(h));
 
-  const todayDate = new Date();
   const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
   const dateStr = `${todayDate.getMonth() + 1}월 ${todayDate.getDate()}일 (${dayNames[todayDate.getDay()]})`;
 
@@ -160,7 +175,7 @@ export default function DashboardPage() {
                             color: item.isDaily ? '#3182F6' : '#D97706',
                           }}
                         >
-                          {item.isDaily ? '📅 매일' : '✨ 오늘만'}
+                          {item.isDaily ? `📅 ${formatScheduledDays(item.scheduledDays)}` : '✨ 오늘만'}
                         </span>
                         {subj && (
                           <span

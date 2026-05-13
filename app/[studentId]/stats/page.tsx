@@ -44,6 +44,7 @@ function getMonthLabel(): string {
 }
 
 const WEEK_LABELS = ['월', '화', '수', '목', '금', '토', '일'];
+const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
 
 // ── 학생별 통계 계산 ─────────────────────────────────────────
 type DayStat = { completed: number; pending: number };
@@ -66,8 +67,14 @@ function calcStudentStats(
       const createdDate = hw.createdAt.split('T')[0];
 
       if (hw.isDaily) {
-        // 매일 숙제: 등록일 이후 날짜마다 활성화
+        // 매일 숙제: 등록일 이후 날짜마다 활성화 + 요일 필터
         if (createdDate > date) continue;
+        const dayLabel = DAY_LABELS[new Date(date).getDay()];
+        const scheduled =
+          hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')
+            ? true
+            : hw.scheduledDays.includes(dayLabel);
+        if (!scheduled) continue;
         const done = hw.completedDate === date;
         if (done) byDate[date].completed++;
         else byDate[date].pending++;

@@ -32,13 +32,19 @@ interface SessionRow {
 
 /**
  * DB에 저장되는 숙제 Row.
- * 기존 스키마 컬럼만 사용하며, is_daily / completed_date 정보는
+ * 기존 스키마 컬럼만 사용하며, is_daily / completed_date / scheduledDays 정보는
  * due_date 필드에 인코딩합니다.
  *
  * 인코딩 규칙 (due_date 값):
- *   "__daily__"           → 매일 숙제, 오늘 미완료
- *   "__daily__:YYYY-MM-DD" → 매일 숙제, 해당 날짜에 완료
- *   null / "YYYY-MM-DD"   → 오늘만 숙제 (일반 동작)
+ *   신규 형식:
+ *     "__daily__|매일"              → 매일 숙제, 모든 요일, 미완료
+ *     "__daily__|월,화"             → 매일 숙제, 월·화 요일만, 미완료
+ *     "__daily__|화|YYYY-MM-DD"    → 매일 숙제, 화 요일, 해당 날짜 완료
+ *   구형식 (하위 호환):
+ *     "__daily__"                  → 매일 숙제, 모든 요일, 미완료
+ *     "__daily__:YYYY-MM-DD"       → 매일 숙제, 모든 요일, 해당 날짜 완료
+ *   오늘만 숙제:
+ *     null / "YYYY-MM-DD"          → 오늘만 숙제
  */
 interface HomeworkRow {
   id: string;
@@ -71,23 +77,51 @@ function sessionToRow(s: StudySession): SessionRow {
   return { id: s.id, student_id: s.studentId, subject_id: s.subjectId, date: s.date, duration_minutes: s.durationMinutes };
 }
 
-/** due_date 인코딩: isDaily/completedDate → due_date 문자열 */
-function encodeDueDate(isDaily: boolean, completedDate: string | null, actualDueDate: string | null): string | null {
+/** due_date 인코딩: isDaily/completedDate/scheduledDays → due_date 문자열 */
+function encodeDueDate(
+  isDaily: boolean,
+  completedDate: string | null,
+  actualDueDate: string | null,
+  scheduledDays: string[],
+): string | null {
   if (!isDaily) return actualDueDate;
-  return completedDate ? `__daily__:${completedDate}` : '__daily__';
+  const daysStr =
+    scheduledDays.length === 0 || scheduledDays.includes('매일')
+      ? '매일'
+      : scheduledDays.join(',');
+  return completedDate
+    ? `__daily__|${daysStr}|${completedDate}`
+    : `__daily__|${daysStr}`;
 }
 
-/** due_date 디코딩: due_date 문자열 → isDaily/completedDate/dueDate */
-function decodeDueDate(dueDate: string | null): { isDaily: boolean; completedDate: string | null; actualDueDate: string | null } {
+/** due_date 디코딩: due_date 문자열 → isDaily/completedDate/dueDate/scheduledDays */
+function decodeDueDate(dueDate: string | null): {
+  isDaily: boolean;
+  completedDate: string | null;
+  actualDueDate: string | null;
+  scheduledDays: string[];
+} {
   if (dueDate?.startsWith('__daily__')) {
-    const completedDate = dueDate.startsWith('__daily__:') ? dueDate.slice('__daily__:'.length) : null;
-    return { isDaily: true, completedDate, actualDueDate: null };
+    // 신규 형식: __daily__|days[|YYYY-MM-DD]
+    if (dueDate.includes('|')) {
+      const parts = dueDate.split('|');
+      const daysStr = parts[1] ?? '매일';
+      const completedDate = parts[2] ?? null;
+      const scheduledDays =
+        daysStr === '매일' ? ['매일'] : daysStr.split(',').filter(Boolean);
+      return { isDaily: true, completedDate, actualDueDate: null, scheduledDays };
+    }
+    // 구형식 하위 호환: __daily__[:YYYY-MM-DD]
+    const completedDate = dueDate.startsWith('__daily__:')
+      ? dueDate.slice('__daily__:'.length)
+      : null;
+    return { isDaily: true, completedDate, actualDueDate: null, scheduledDays: ['매일'] };
   }
-  return { isDaily: false, completedDate: null, actualDueDate: dueDate };
+  return { isDaily: false, completedDate: null, actualDueDate: dueDate, scheduledDays: [] };
 }
 
 function rowToHomework(r: HomeworkRow): HomeworkItem {
-  const { isDaily, completedDate, actualDueDate } = decodeDueDate(r.due_date);
+  const { isDaily, completedDate, actualDueDate, scheduledDays } = decodeDueDate(r.due_date);
   return {
     id: r.id,
     studentId: r.student_id as StudentId,
@@ -98,6 +132,7 @@ function rowToHomework(r: HomeworkRow): HomeworkItem {
     completedDate,
     createdAt: r.created_at,
     isDaily,
+    scheduledDays,
   };
 }
 function homeworkToRow(h: HomeworkItem): HomeworkRow {
@@ -106,7 +141,7 @@ function homeworkToRow(h: HomeworkItem): HomeworkRow {
     student_id: h.studentId,
     subject_id: h.subjectId,
     title: h.title,
-    due_date: encodeDueDate(h.isDaily, h.completedDate, h.dueDate),
+    due_date: encodeDueDate(h.isDaily, h.completedDate, h.dueDate, h.scheduledDays),
     completed: h.completed,
     created_at: h.createdAt,
   };
@@ -134,10 +169,11 @@ async function loadFromSupabase(): Promise<AppData | null> {
 
 async function seedToSupabase(data: AppData) {
   if (!db) return;
-  await db.from('students').insert(data.students.map(studentToRow));
-  if (data.subjects.length > 0) await db.from('subjects').insert(data.subjects.map(subjectToRow));
-  if (data.sessions.length > 0)  await db.from('sessions').insert(data.sessions.map(sessionToRow));
-  if (data.homework.length > 0)  await db.from('homework').insert(data.homework.map(homeworkToRow));
+  // upsert: 중복 실행 시에도 오류 없이 덮어씀 (StrictMode 이중 호출 안전)
+  await db.from('students').upsert(data.students.map(studentToRow));
+  if (data.subjects.length > 0) await db.from('subjects').upsert(data.subjects.map(subjectToRow));
+  if (data.sessions.length > 0)  await db.from('sessions').upsert(data.sessions.map(sessionToRow));
+  if (data.homework.length > 0)  await db.from('homework').upsert(data.homework.map(homeworkToRow));
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -287,14 +323,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addSubject = useCallback((subject: Subject) => {
-    setData(prev => {
-      const next = { ...prev, subjects: [...prev.subjects, subject] };
-      if (db) {
-        db.from('subjects').insert(subjectToRow(subject))
-          .then(({ error }) => { if (error) console.error('addSubject:', error); });
-      }
-      return next;
-    });
+    setData(prev => ({ ...prev, subjects: [...prev.subjects, subject] }));
+    if (db) {
+      db.from('subjects').insert(subjectToRow(subject))
+        .then(({ error }) => { if (error) console.error('addSubject:', error); });
+    }
   }, []);
 
   const updateSubject = useCallback((id: string, updates: Partial<Subject>) => {
@@ -321,14 +354,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addSession = useCallback((session: StudySession) => {
-    setData(prev => {
-      const next = { ...prev, sessions: [...prev.sessions, session] };
-      if (db) {
-        db.from('sessions').insert(sessionToRow(session))
-          .then(({ error }) => { if (error) console.error('addSession:', error); });
-      }
-      return next;
-    });
+    setData(prev => ({ ...prev, sessions: [...prev.sessions, session] }));
+    if (db) {
+      db.from('sessions').insert(sessionToRow(session))
+        .then(({ error }) => { if (error) console.error('addSession:', error); });
+    }
   }, []);
 
   const deleteSession = useCallback((id: string) => {
@@ -343,14 +373,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addHomework = useCallback((item: HomeworkItem) => {
-    setData(prev => {
-      const next = { ...prev, homework: [...prev.homework, item] };
-      if (db) {
-        db.from('homework').insert(homeworkToRow(item))
-          .then(({ error }) => { if (error) console.error('addHomework:', error); });
-      }
-      return next;
-    });
+    setData(prev => ({ ...prev, homework: [...prev.homework, item] }));
+    if (db) {
+      db.from('homework').insert(homeworkToRow(item))
+        .then(({ error }) => { if (error) console.error('addHomework:', error); });
+    }
   }, []);
 
   const updateHomework = useCallback((id: string, updates: Partial<HomeworkItem>) => {
@@ -362,12 +389,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if ('completed' in updates) dbUpdates.completed  = updates.completed;
         if ('title'     in updates) dbUpdates.title       = updates.title;
         if ('subjectId' in updates) dbUpdates.subject_id  = updates.subjectId ?? null;
-        // isDaily, completedDate, dueDate 중 하나라도 변경되면 due_date 재인코딩
-        if ('isDaily' in updates || 'completedDate' in updates || 'dueDate' in updates) {
+        // isDaily, completedDate, dueDate, scheduledDays 중 하나라도 변경되면 due_date 재인코딩
+        if ('isDaily' in updates || 'completedDate' in updates || 'dueDate' in updates || 'scheduledDays' in updates) {
           dbUpdates.due_date = encodeDueDate(
             updatedItem.isDaily,
             updatedItem.completedDate,
             updatedItem.dueDate,
+            updatedItem.scheduledDays,
           );
         }
         db.from('homework').update(dbUpdates).eq('id', id)

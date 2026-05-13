@@ -33,9 +33,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 -- 숙제 테이블
 -- due_date 인코딩 규칙:
---   "__daily__"            → 매일 반복 숙제, 오늘 미완료
---   "__daily__:YYYY-MM-DD" → 매일 반복 숙제, 해당 날짜 완료
---   null / "YYYY-MM-DD"    → 오늘만 숙제 (일반 due date)
+--   신규 형식:
+--     "__daily__|매일"             → 매일 반복 숙제, 모든 요일, 미완료
+--     "__daily__|월,화"            → 매일 반복 숙제, 월·화 요일만, 미완료
+--     "__daily__|화|YYYY-MM-DD"   → 매일 반복 숙제, 화 요일, 해당 날짜 완료
+--   구형식 (하위 호환):
+--     "__daily__"                 → 매일 반복 숙제, 모든 요일, 미완료
+--     "__daily__:YYYY-MM-DD"      → 매일 반복 숙제, 모든 요일, 해당 날짜 완료
+--   오늘만 숙제:
+--     null / "YYYY-MM-DD"         → 오늘만 숙제 (일반 due date)
 CREATE TABLE IF NOT EXISTS homework (
   id         text PRIMARY KEY,
   student_id text    NOT NULL REFERENCES students(id) ON DELETE CASCADE,

@@ -35,6 +35,7 @@ export interface HomeworkItem {
   completedDate: string | null; // daily: 오늘 완료한 날짜(YYYY-MM-DD), null이면 미완료
   createdAt: string;
   isDaily: boolean;       // true: 매일 반복 숙제 / false: 오늘만 숙제
+  scheduledDays: string[]; // daily 전용: ['매일'] 또는 ['월','화'] 등 요일 배열
 }
 
 export interface AppData {

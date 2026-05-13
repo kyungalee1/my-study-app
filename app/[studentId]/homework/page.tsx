@@ -7,8 +7,16 @@ import type { StudentId, HomeworkItem } from '../../lib/types';
 
 type Tab = 'daily' | 'oneday';
 
+const DAY_OPTIONS = ['매일', '월', '화', '수', '목', '금', '토', '일'] as const;
+const DAY_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'] as const;
+
 function toDateStr(date: Date): string {
   return date.toISOString().split('T')[0];
+}
+
+function formatScheduledDays(days: string[]): string {
+  if (days.length === 0 || days.includes('매일')) return '매일';
+  return days.join('·');
 }
 
 export default function HomeworkPage() {
@@ -26,6 +34,7 @@ export default function HomeworkPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [title, setTitle] = useState('');
   const [subjectId, setSubjectId] = useState<string>('');
+  const [scheduledDays, setScheduledDays] = useState<string[]>(['매일']);
 
   // 탭별 숙제 분리
   const dailyItems = allHomework.filter(h => h.isDaily);
@@ -52,6 +61,21 @@ export default function HomeworkPage() {
     }
   }
 
+  function toggleDay(day: string) {
+    if (day === '매일') {
+      setScheduledDays(['매일']);
+      return;
+    }
+    setScheduledDays(prev => {
+      const withoutAll = prev.filter(d => d !== '매일');
+      const already = withoutAll.includes(day);
+      const next = already
+        ? withoutAll.filter(d => d !== day)
+        : [...withoutAll, day];
+      return next.length === 0 ? ['매일'] : next;
+    });
+  }
+
   function addItem() {
     if (!title.trim()) return;
     const item: HomeworkItem = {
@@ -64,10 +88,12 @@ export default function HomeworkPage() {
       completedDate: null,
       createdAt: new Date().toISOString(),
       isDaily: tab === 'daily',
+      scheduledDays: tab === 'daily' ? scheduledDays : [],
     };
     addHomework(item);
     setTitle('');
     setSubjectId('');
+    setScheduledDays(['매일']);
     setShowAdd(false);
   }
 
@@ -121,7 +147,16 @@ export default function HomeworkPage() {
             >
               {item.title}
             </p>
-            <div className="flex items-center gap-2 mt-0.5">
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              {/* 요일 배지 (매일 숙제만) */}
+              {item.isDaily && (
+                <span
+                  className="rounded-full px-2 py-0.5 font-bold"
+                  style={{ fontSize: 10, background: color + '18', color }}
+                >
+                  {formatScheduledDays(item.scheduledDays)}
+                </span>
+              )}
               {subj && (
                 <span
                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium"
@@ -138,7 +173,7 @@ export default function HomeworkPage() {
             </div>
           </div>
 
-          {/* Delete — 매일 숙제도 삭제 가능 */}
+          {/* Delete */}
           <button
             onClick={() => deleteHomework(item.id)}
             className="p-2 rounded-xl flex-shrink-0"
@@ -235,14 +270,14 @@ export default function HomeworkPage() {
         {tab === 'daily' ? (
           <>
             <span style={{ fontSize: 18 }}>📅</span>
-            <p style={{ fontSize: 12, color: color, fontWeight: 600 }}>
-              매일 반복되는 숙제입니다. 매일 새롭게 체크할 수 있어요.
+            <p style={{ fontSize: 12, color, fontWeight: 600 }}>
+              매일 반복되는 숙제입니다. 요일을 지정하면 해당 요일에만 표시됩니다.
             </p>
           </>
         ) : (
           <>
             <span style={{ fontSize: 18 }}>✨</span>
-            <p style={{ fontSize: 12, color: color, fontWeight: 600 }}>
+            <p style={{ fontSize: 12, color, fontWeight: 600 }}>
               오늘 하루만 추가된 숙제입니다. 완료 후 삭제하면 돼요.
             </p>
           </>
@@ -288,7 +323,7 @@ export default function HomeworkPage() {
       {/* Add Sheet */}
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-end" style={{ background: 'rgba(0,0,0,0.4)' }}>
-          <div className="w-full rounded-t-3xl p-6 animate-slideup" style={{ background: 'var(--surface)' }}>
+          <div className="w-full rounded-t-3xl p-6 animate-slideup" style={{ background: 'var(--surface)', maxHeight: '92vh', overflowY: 'auto' }}>
             <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--border)' }} />
             <div className="flex items-center gap-2 mb-5">
               <span style={{ fontSize: 18 }}>{tab === 'daily' ? '📅' : '✨'}</span>
@@ -297,6 +332,7 @@ export default function HomeworkPage() {
               </h2>
             </div>
 
+            {/* 숙제 내용 */}
             <label className="block mb-1 text-sm font-semibold" style={{ color: 'var(--text-sub)' }}>숙제 내용</label>
             <input
               value={title}
@@ -309,6 +345,42 @@ export default function HomeworkPage() {
               autoFocus
             />
 
+            {/* 요일 선택 (매일 숙제 전용) */}
+            {tab === 'daily' && (
+              <>
+                <label className="block mb-2 text-sm font-semibold" style={{ color: 'var(--text-sub)' }}>
+                  숙제할 요일
+                </label>
+                <div className="flex gap-1.5 flex-wrap mb-5">
+                  {DAY_OPTIONS.map(day => {
+                    const isSelected =
+                      day === '매일'
+                        ? scheduledDays.includes('매일')
+                        : !scheduledDays.includes('매일') && scheduledDays.includes(day);
+                    return (
+                      <button
+                        key={day}
+                        onClick={() => toggleDay(day)}
+                        className="rounded-xl font-bold transition-all"
+                        style={{
+                          minWidth: day === '매일' ? 52 : 38,
+                          paddingTop: 8, paddingBottom: 8,
+                          paddingLeft: day === '매일' ? 12 : 0,
+                          paddingRight: day === '매일' ? 12 : 0,
+                          fontSize: 13,
+                          background: isSelected ? color : 'var(--bg)',
+                          color: isSelected ? '#fff' : 'var(--text-sub)',
+                        }}
+                      >
+                        {day}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* 과목 선택 */}
             <label className="block mb-2 text-sm font-semibold" style={{ color: 'var(--text-sub)' }}>과목 (선택)</label>
             <div className="flex flex-wrap gap-2 mb-6">
               <button
@@ -338,7 +410,7 @@ export default function HomeworkPage() {
 
             <div className="flex gap-3">
               <button
-                onClick={() => { setShowAdd(false); setTitle(''); setSubjectId(''); }}
+                onClick={() => { setShowAdd(false); setTitle(''); setSubjectId(''); setScheduledDays(['매일']); }}
                 className="flex-1 py-4 rounded-2xl font-bold"
                 style={{ background: 'var(--bg)', color: 'var(--text-sub)', fontSize: 16 }}
               >
@@ -362,3 +434,6 @@ export default function HomeworkPage() {
     </div>
   );
 }
+
+// 요일 유틸 (외부 사용 가능)
+export { DAY_OF_WEEK };
