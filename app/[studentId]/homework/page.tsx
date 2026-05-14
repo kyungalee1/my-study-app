@@ -27,25 +27,25 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+    <div className="flex items-center justify-center px-5" style={{ height: '100dvh', background: 'var(--bg)' }}>
       <div
-        className="w-full rounded-3xl p-8 flex flex-col items-center"
-        style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', maxWidth: 360 }}
+        className="w-full rounded-3xl flex flex-col items-center"
+        style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', maxWidth: 360, padding: '28px 24px' }}
       >
         <div
-          className="rounded-2xl flex items-center justify-center mb-5"
-          style={{ width: 64, height: 64, background: 'var(--primary-light)' }}
+          className="rounded-2xl flex items-center justify-center mb-4"
+          style={{ width: 52, height: 52, background: 'var(--primary-light)' }}
         >
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
             <rect x="3" y="11" width="18" height="11" rx="2" stroke="var(--primary)" strokeWidth="2"/>
             <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round"/>
           </svg>
         </div>
-        <h2 className="font-bold mb-1" style={{ fontSize: 20, color: 'var(--text)' }}>숙제 관리</h2>
-        <p className="mb-6 text-center" style={{ fontSize: 14, color: 'var(--text-sub)' }}>비밀번호를 입력해주세요</p>
+        <h2 className="font-bold mb-1" style={{ fontSize: 18, color: 'var(--text)' }}>숙제 관리</h2>
+        <p className="mb-5 text-center" style={{ fontSize: 13, color: 'var(--text-sub)' }}>비밀번호를 입력해주세요</p>
 
         <div
-          className="w-full rounded-2xl px-4 flex items-center mb-3"
+          className="w-full rounded-2xl px-4 flex items-center mb-2"
           style={{
             border: `1.5px solid ${error ? 'var(--error)' : 'var(--border)'}`,
             background: 'var(--bg)',
@@ -58,23 +58,23 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
             value={input}
             onChange={e => { setInput(e.target.value); setError(false); }}
             onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
-            className="flex-1 py-4 outline-none font-bold text-center tracking-widest"
-            style={{ background: 'transparent', fontSize: 22, color: 'var(--text)', letterSpacing: 12 }}
+            className="flex-1 py-3 outline-none font-bold text-center tracking-widest"
+            style={{ background: 'transparent', fontSize: 20, color: 'var(--text)', letterSpacing: 10 }}
             placeholder="••••"
             maxLength={10}
           />
         </div>
 
         {error && (
-          <p className="mb-3 font-semibold" style={{ fontSize: 13, color: 'var(--error)' }}>
+          <p className="mb-2 font-semibold" style={{ fontSize: 12, color: 'var(--error)' }}>
             비밀번호가 틀렸습니다
           </p>
         )}
 
         <button
           onClick={handleSubmit}
-          className="w-full py-4 rounded-2xl font-bold mt-1"
-          style={{ background: 'var(--primary)', color: '#fff', fontSize: 16 }}
+          className="w-full py-3.5 rounded-2xl font-bold mt-1"
+          style={{ background: 'var(--primary)', color: '#fff', fontSize: 15 }}
         >
           확인
         </button>
@@ -285,9 +285,9 @@ export default function HomeworkPage() {
   }
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
+    <div className="flex flex-col" style={{ height: '100dvh', background: 'var(--bg)' }}>
       {/* Header */}
-      <div className="px-5 pt-14 pb-0" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
+      <div className="flex-shrink-0 px-5 pt-14 pb-0" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
         <button
           onClick={() => router.back()}
           className="flex items-center justify-center rounded-full mb-3 active:opacity-50 transition-opacity"
@@ -346,7 +346,7 @@ export default function HomeworkPage() {
 
       {/* Tab 설명 배너 */}
       <div
-        className="mx-4 mt-4 rounded-2xl px-4 py-3 flex items-center gap-2"
+        className="flex-shrink-0 mx-4 mt-3 rounded-2xl px-4 py-2.5 flex items-center gap-2"
         style={{ background: color + '12' }}
       >
         {tab === 'daily' ? (
@@ -366,17 +366,17 @@ export default function HomeworkPage() {
         )}
       </div>
 
-      {/* List */}
-      <div className="px-4 py-4 space-y-2">
+      {/* List — 스크롤 영역 */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2" style={{ paddingBottom: 'calc(80px + env(safe-area-inset-bottom))' }}>
         {currentItems.length === 0 && (
-          <div className="rounded-2xl p-10 flex flex-col items-center" style={{ background: 'var(--surface)' }}>
-            <span style={{ fontSize: 48, marginBottom: 10 }}>
+          <div className="rounded-2xl p-6 flex flex-col items-center" style={{ background: 'var(--surface)' }}>
+            <span style={{ fontSize: 36, marginBottom: 8 }}>
               {tab === 'daily' ? '📋' : '📝'}
             </span>
-            <p className="font-bold mb-1" style={{ fontSize: 16, color: 'var(--text)' }}>
+            <p className="font-bold mb-1" style={{ fontSize: 15, color: 'var(--text)' }}>
               {tab === 'daily' ? '매일 숙제가 없어요!' : '오늘 추가된 숙제가 없어요!'}
             </p>
-            <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>위 + 버튼으로 추가해보세요</p>
+            <p style={{ fontSize: 12, color: 'var(--text-sub)' }}>위 + 버튼으로 추가해보세요</p>
           </div>
         )}
 
