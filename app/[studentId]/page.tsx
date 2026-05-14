@@ -191,7 +191,7 @@ function DashboardContent() {
                     <p className="truncate font-semibold" style={{ fontSize: 14, color: 'var(--text)' }}>{item.title}</p>
                     <div className="flex items-center gap-1 mt-0.5">
                       <span className="rounded-full px-1.5 py-0.5 font-bold" style={{ fontSize: 9, background: item.isDaily ? '#3182F615' : '#F59E0B15', color: item.isDaily ? '#3182F6' : '#D97706' }}>
-                        {item.isDaily ? '📅 매일' : '✨ 오늘만'}
+                        {item.isDaily ? `📅 ${item.scheduledDays.length === 0 || item.scheduledDays.includes('매일') ? '매일' : item.scheduledDays.join('·')}` : '✨ 오늘만'}
                       </span>
                       {subj && <span className="rounded-full px-1.5 py-0.5 font-semibold" style={{ fontSize: 9, background: subj.color + '18', color: subj.color }}>{subj.name}</span>}
                     </div>
