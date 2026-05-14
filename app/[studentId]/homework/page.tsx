@@ -27,58 +27,41 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   }
 
   return (
-    <div className="flex items-center justify-center px-5" style={{ height: '100dvh', background: 'var(--bg)' }}>
+    <div className="flex flex-col items-center justify-center px-8" style={{ height: '100dvh', background: 'var(--bg)' }}>
+      <p className="font-bold mb-1" style={{ fontSize: 16, color: 'var(--text)' }}>🔒 숙제 관리</p>
+      <p className="mb-4" style={{ fontSize: 12, color: 'var(--text-sub)' }}>비밀번호 입력</p>
+
       <div
-        className="w-full rounded-3xl flex flex-col items-center"
-        style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', maxWidth: 360, padding: '28px 24px' }}
+        className="flex items-center justify-center rounded-xl mb-2"
+        style={{
+          width: '100%', maxWidth: 140,
+          border: `1.5px solid ${error ? 'var(--error)' : 'var(--border)'}`,
+          background: 'var(--surface)',
+          animation: shake ? 'shake 0.4s ease' : undefined,
+        }}
       >
-        <div
-          className="rounded-2xl flex items-center justify-center mb-4"
-          style={{ width: 52, height: 52, background: 'var(--primary-light)' }}
-        >
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-            <rect x="3" y="11" width="18" height="11" rx="2" stroke="var(--primary)" strokeWidth="2"/>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
-        </div>
-        <h2 className="font-bold mb-1" style={{ fontSize: 18, color: 'var(--text)' }}>숙제 관리</h2>
-        <p className="mb-5 text-center" style={{ fontSize: 13, color: 'var(--text-sub)' }}>비밀번호를 입력해주세요</p>
-
-        <div
-          className="w-full rounded-2xl px-4 flex items-center mb-2"
-          style={{
-            border: `1.5px solid ${error ? 'var(--error)' : 'var(--border)'}`,
-            background: 'var(--bg)',
-            animation: shake ? 'shake 0.4s ease' : undefined,
-          }}
-        >
-          <input
-            ref={inputRef}
-            type="password"
-            value={input}
-            onChange={e => { setInput(e.target.value); setError(false); }}
-            onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
-            className="flex-1 py-3 outline-none font-bold text-center tracking-widest"
-            style={{ background: 'transparent', fontSize: 20, color: 'var(--text)', letterSpacing: 10 }}
-            placeholder="••••"
-            maxLength={10}
-          />
-        </div>
-
-        {error && (
-          <p className="mb-2 font-semibold" style={{ fontSize: 12, color: 'var(--error)' }}>
-            비밀번호가 틀렸습니다
-          </p>
-        )}
-
-        <button
-          onClick={handleSubmit}
-          className="w-full py-3.5 rounded-2xl font-bold mt-1"
-          style={{ background: 'var(--primary)', color: '#fff', fontSize: 15 }}
-        >
-          확인
-        </button>
+        <input
+          ref={inputRef}
+          type="password"
+          value={input}
+          onChange={e => { setInput(e.target.value); setError(false); }}
+          onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
+          className="outline-none font-bold text-center"
+          style={{ background: 'transparent', fontSize: 18, color: 'var(--text)', letterSpacing: 10, padding: '8px 12px', width: '100%' }}
+          placeholder="••••"
+          maxLength={10}
+        />
       </div>
+
+      {error && <p className="mb-2 font-semibold" style={{ fontSize: 11, color: 'var(--error)' }}>비밀번호가 틀렸습니다</p>}
+
+      <button
+        onClick={handleSubmit}
+        className="rounded-xl font-bold"
+        style={{ background: 'var(--primary)', color: '#fff', fontSize: 13, padding: '8px 0', width: '100%', maxWidth: 140, marginTop: 3 }}
+      >
+        확인
+      </button>
 
       <style>{`
         @keyframes shake {
