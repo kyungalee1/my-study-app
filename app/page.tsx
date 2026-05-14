@@ -1,7 +1,7 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRef, useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { AppProvider, useApp } from './lib/store';
 import type { HomeworkItem, StudentId } from './lib/types';
 
@@ -9,69 +9,99 @@ const POINT_DAILY = 500;    // 매일 숙제: 전체 완료일 +500 / 지난 미
 const POINT_ONEDAY = 300;   // 오늘만 숙제: 해당 날 전부 완료 시 +300
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
 
-interface PointsBreakdown {
-  daily: number;    // 매일 숙제 포인트 합계
-  oneday: number;   // 오늘만 숙제 포인트 합계
-  total: number;    // 전체 합계
+interface PointsDisplay {
+  todayDaily: number;   // 오늘 매일 숙제 결과 (0 or +500)
+  todayOneday: number;  // 오늘만 숙제 결과 (0 or +300)
+  monthlyTotal: number; // 이달 누적 합계 (과거 확정 + 오늘 현재 상태)
 }
 
-function isDoneOn(hw: HomeworkItem, dateStr: string): boolean {
-  return hw.isDaily ? hw.completedDate === dateStr : hw.completed;
+// 계산에서 제외할 날짜
+const SKIP_DATES = new Set(['2026-05-13']);
+
+function toLocalStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function calcMonthlyPoints(studentId: StudentId, homework: HomeworkItem[]): PointsBreakdown {
-  const now = new Date();
-  const today = now.toISOString().split('T')[0];
-  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+function getTodayStr(): string {
+  return toLocalStr(new Date());
+}
 
-  // ── 매일 숙제: 각 숙제의 등록일부터 날짜별 전체 완료 여부 집계 ──────────
+/** ISO 문자열(UTC 포함)을 KST 로컬 날짜 YYYY-MM-DD로 변환 */
+function localDateOf(isoStr: string): string {
+  return toLocalStr(new Date(isoStr));
+}
+
+/** viewDate 기준으로 포인트 계산. todayStr은 실제 오늘(패널티 기준용) */
+function calcPoints(studentId: StudentId, homework: HomeworkItem[], viewDate: string, todayStr: string): PointsDisplay {
+  const viewDay = DAY_LABELS[new Date(viewDate + 'T12:00:00').getDay()];
+  const monthStart = viewDate.slice(0, 7) + '-01';
+
   const dailyHw = homework.filter(h => h.isDaily && h.studentId === studentId);
-  let dailyPoints = 0;
+
+  // ── 선택일 매일 숙제 결과 ─────────────────────────────────────────────────
+  const viewActiveDailyHw = dailyHw.filter(hw => {
+      if (localDateOf(hw.createdAt) > viewDate) return false;
+    if (hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')) return true;
+    return hw.scheduledDays.includes(viewDay);
+  });
+  const todayDaily =
+    viewActiveDailyHw.length > 0 && viewActiveDailyHw.every(hw => hw.completedDates.includes(viewDate))
+      ? POINT_DAILY : 0;
+
+  // ── 선택일 오늘만 숙제 결과 ───────────────────────────────────────────────
+  const viewOnedayHw = homework.filter(
+    h => !h.isDaily && h.studentId === studentId && localDateOf(h.createdAt) === viewDate
+  );
+  const todayOneday =
+    viewOnedayHw.length > 0 && viewOnedayHw.every(hw => hw.completed)
+      ? POINT_ONEDAY : 0;
+
+  // ── 이달 누적 합계 (monthStart ~ viewDate) ────────────────────────────────
+  let monthlyTotal = 0;
 
   if (dailyHw.length > 0) {
-    const start = new Date(monthStart);
-    const end = new Date(today);
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      // 이 날짜 기준으로 이미 등록된 숙제만 집계 (등록일 <= 해당 날짜)
-      const dayLabel = DAY_LABELS[new Date(dateStr).getDay()];
-      const activeDailyHw = dailyHw.filter(hw => {
-        if (hw.createdAt.split('T')[0] > dateStr) return false;
-        // 요일 필터: '매일' 또는 해당 요일 포함 시 활성
+    for (let d = new Date(monthStart + 'T12:00:00'); ; d.setDate(d.getDate() + 1)) {
+      const dateStr = toLocalStr(d);
+      if (dateStr > viewDate) break;
+      if (SKIP_DATES.has(dateStr)) continue;
+
+      const dayLabel = DAY_LABELS[d.getDay()];
+      const active = dailyHw.filter(hw => {
+        if (localDateOf(hw.createdAt) > dateStr) return false;
         if (hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')) return true;
         return hw.scheduledDays.includes(dayLabel);
       });
-      if (activeDailyHw.length === 0) continue;
+      if (active.length === 0) continue;
 
-      const pending = activeDailyHw.filter(hw => !isDoneOn(hw, dateStr)).length;
-      if (pending === 0) {
-        dailyPoints += POINT_DAILY;        // 그날 전부 완료 → +500
-      } else if (dateStr < today) {
-        dailyPoints -= POINT_DAILY;        // 지난 날 미완료 → -500
+      const allDone = active.every(hw => hw.completedDates.includes(dateStr));
+      if (allDone) {
+        monthlyTotal += POINT_DAILY;
+      } else if (dateStr < todayStr || (dateStr === viewDate && viewDate < todayStr)) {
+        // 과거 날짜 미완료 → 패널티 (선택일이 오늘이면 패널티 없음)
+        monthlyTotal -= POINT_DAILY;
       }
     }
   }
 
-  // ── 오늘만 숙제: 날짜별로 그룹화하여 그날 등록된 전부 완료 시 +300 ──────
+  // 오늘만 숙제 누적 (monthStart ~ viewDate)
   const onedayHw = homework.filter(
-    h => !h.isDaily && h.studentId === studentId && h.createdAt.split('T')[0] >= monthStart
+    h => !h.isDaily && h.studentId === studentId &&
+      localDateOf(h.createdAt) >= monthStart &&
+      localDateOf(h.createdAt) <= viewDate
   );
-  let onedayPoints = 0;
-  // 날짜별로 그룹화
   const onedayByDate = new Map<string, HomeworkItem[]>();
   for (const hw of onedayHw) {
-    const dateKey = hw.createdAt.split('T')[0];
+    const dateKey = localDateOf(hw.createdAt);
     if (!onedayByDate.has(dateKey)) onedayByDate.set(dateKey, []);
     onedayByDate.get(dateKey)!.push(hw);
   }
-  // 날짜별로 전부 완료 시에만 +300
   for (const [, items] of onedayByDate) {
     if (items.length > 0 && items.every(hw => hw.completed)) {
-      onedayPoints += POINT_ONEDAY;
+      monthlyTotal += POINT_ONEDAY;
     }
   }
 
-  return { daily: dailyPoints, oneday: onedayPoints, total: dailyPoints + onedayPoints };
+  return { todayDaily, todayOneday, monthlyTotal };
 }
 
 function formatPoints(pts: number): string {
@@ -119,6 +149,18 @@ function AvatarDisplay({ photo, avatar, color, size = 64 }: { photo?: string; av
   );
 }
 
+// ── 화이트보드 타입 & 유틸 ──────────────────────────────────
+const WB_KEY = 'whiteboard-v1';
+interface WbMessage { id: string; author: string; text: string; ts: number; }
+interface WbData { notice: string; replies: WbMessage[]; }
+
+function loadWb(): WbData {
+  try { const s = localStorage.getItem(WB_KEY); return s ? JSON.parse(s) : { notice: '', replies: [] }; } catch { return { notice: '', replies: [] }; }
+}
+function saveWb(d: WbData) {
+  try { localStorage.setItem(WB_KEY, JSON.stringify(d)); } catch {}
+}
+
 function HomeContent() {
   const { data, updateStudent, loading } = useApp();
   const homework = data.homework;
@@ -129,6 +171,49 @@ function HomeContent() {
   const [editGrade, setEditGrade] = useState('');
   const [editPhoto, setEditPhoto] = useState<string | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 화이트보드
+  const [wb, setWb] = useState<WbData>({ notice: '', replies: [] });
+  const [wbEdit, setWbEdit] = useState(false);
+  const [wbDraft, setWbDraft] = useState('');
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyAuthor, setReplyAuthor] = useState('');
+  const [replyText, setReplyText] = useState('');
+
+  useEffect(() => { setWb(loadWb()); }, []);
+
+  const todayStr = getTodayStr();
+  const searchParams = useSearchParams();
+  const initialDate = (() => {
+    const p = searchParams.get('date');
+    if (p && p >= todayStr.slice(0, 7) + '-01' && p <= todayStr) return p;
+    return todayStr;
+  })();
+  const [viewDate, setViewDate] = useState(initialDate);
+
+  function prevDay() {
+    const d = new Date(viewDate + 'T12:00:00');
+    d.setDate(d.getDate() - 1);
+    const prev = toLocalStr(d);
+    // 이번 달 1일 이전으로는 이동 불가
+    if (prev >= viewDate.slice(0, 7) + '-01') setViewDate(prev);
+  }
+
+  function nextDay() {
+    if (viewDate >= todayStr) return;
+    const d = new Date(viewDate + 'T12:00:00');
+    d.setDate(d.getDate() + 1);
+    setViewDate(toLocalStr(d));
+  }
+
+  function formatViewDate(dateStr: string): string {
+    const d = new Date(dateStr + 'T12:00:00');
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    return `${d.getMonth() + 1}월 ${d.getDate()}일 (${dayNames[d.getDay()]})`;
+  }
+
+  const isToday = viewDate === todayStr;
+
 
   if (loading) {
     return (
@@ -182,52 +267,203 @@ function HomeContent() {
   }
 
   function goToStudent(id: StudentId) {
-    router.push(`/${id}`);
+    router.push(`/${id}?date=${viewDate}`);
   }
-
-  const today = new Date();
-  const dateStr = today.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       {/* Header */}
-      <div className="px-5 pt-14 pb-6" style={{ background: 'var(--surface)' }}>
-        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>{dateStr}</p>
-        <h1 className="mt-1 font-bold" style={{ fontSize: 26, color: 'var(--text)' }}>
-          공부 관리
-        </h1>
-        <p className="mt-1" style={{ color: 'var(--text-sub)', fontSize: 15 }}>
-          오늘도 함께 열심히 해봐요 💪
+      <div className="px-5 pt-14 pb-4" style={{ background: 'var(--surface)' }}>
+        <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-sub)', letterSpacing: '0.01em' }}>
+          연호랑 세연이 기록장
         </p>
+
+        {/* 날짜 네비게이터 */}
+        <div className="flex items-center justify-between mt-3">
+          <button
+            onClick={prevDay}
+            className="flex items-center justify-center rounded-full transition-opacity active:opacity-50"
+            style={{ width: 36, height: 36, color: 'var(--text-sub)' }}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+              <path d="M13 5L8 10l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+
+          <div className="flex flex-col items-center gap-1">
+            <span className="font-bold" style={{ fontSize: 22, color: 'var(--text)', letterSpacing: '-0.02em' }}>
+              {formatViewDate(viewDate)}
+            </span>
+            {isToday ? (
+              <span
+                className="rounded-full px-2.5 py-0.5 font-semibold"
+                style={{ fontSize: 11, background: 'var(--primary-light)', color: 'var(--primary)' }}
+              >
+                오늘
+              </span>
+            ) : (
+              <button
+                onClick={() => setViewDate(todayStr)}
+                style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}
+              >
+                오늘로 ↩
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={nextDay}
+            disabled={isToday}
+            className="flex items-center justify-center rounded-full transition-opacity active:opacity-50"
+            style={{ width: 36, height: 36, color: isToday ? 'var(--border)' : 'var(--text-sub)' }}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+              <path d="M7 5l5 5-5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* 화이트보드 */}
+      <div className="px-4 pt-4 pb-0">
+        <div className="rounded-2xl overflow-hidden" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', border: '1.5px solid var(--border)' }}>
+          {/* 상단 바 */}
+          <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: '1px solid var(--border)', background: '#FFFBEB' }}>
+            <div className="flex items-center gap-1.5">
+              <span style={{ fontSize: 14 }}>📌</span>
+              <span className="font-bold" style={{ fontSize: 12, color: '#92400E' }}>우리가족 공지사항</span>
+            </div>
+            <button
+              onClick={() => { setWbDraft(wb.notice); setWbEdit(true); }}
+              style={{ fontSize: 11, color: '#D97706', fontWeight: 600 }}
+            >
+              {wb.notice ? '수정' : '작성'}
+            </button>
+          </div>
+
+          {/* 공지 내용 */}
+          {wbEdit ? (
+            <div className="px-4 py-3">
+              <textarea
+                value={wbDraft}
+                onChange={e => setWbDraft(e.target.value)}
+                placeholder="아이들에게 전할 말을 적어봐요 ✏️"
+                className="w-full outline-none resize-none"
+                style={{ fontSize: 13, color: 'var(--text)', background: 'transparent', lineHeight: 1.6, minHeight: 56 }}
+                autoFocus
+              />
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => setWbEdit(false)}
+                  className="rounded-xl px-3 py-1.5 font-semibold"
+                  style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text-sub)' }}
+                >취소</button>
+                <button
+                  onClick={() => {
+                    const next = { ...wb, notice: wbDraft.trim() };
+                    setWb(next); saveWb(next); setWbEdit(false);
+                  }}
+                  className="rounded-xl px-3 py-1.5 font-semibold"
+                  style={{ fontSize: 12, background: '#F59E0B', color: '#fff' }}
+                >저장</button>
+              </div>
+            </div>
+          ) : (
+            <div className="px-4 py-3">
+              {wb.notice ? (
+                <p style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{wb.notice}</p>
+              ) : (
+                <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>아직 공지가 없어요</p>
+              )}
+            </div>
+          )}
+
+          {/* 답변 목록 */}
+          {wb.replies.length > 0 && (
+            <div style={{ borderTop: '1px solid var(--border)' }}>
+              {wb.replies.map(r => (
+                <div key={r.id} className="flex items-start gap-2 px-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', flexShrink: 0, marginTop: 1 }}>{r.author}</span>
+                  <p style={{ fontSize: 12, color: 'var(--text)', flex: 1, lineHeight: 1.5 }}>{r.text}</p>
+                  <button
+                    onClick={() => {
+                      const next = { ...wb, replies: wb.replies.filter(x => x.id !== r.id) };
+                      setWb(next); saveWb(next);
+                    }}
+                    style={{ fontSize: 16, color: 'var(--text-sub)', flexShrink: 0, lineHeight: 1 }}
+                  >×</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 답변 달기 */}
+          {replyOpen ? (
+            <div className="px-4 py-3" style={{ borderTop: '1px solid var(--border)' }}>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {[
+                  ...data.students.map(s => ({ name: s.name, color: s.color })),
+                  { name: '엄마', color: '#F472B6' },
+                  { name: '아빠', color: '#60A5FA' },
+                ].map(({ name, color }) => (
+                  <button
+                    key={name}
+                    onClick={() => setReplyAuthor(name)}
+                    className="rounded-full px-3 py-1 font-semibold"
+                    style={{
+                      fontSize: 11,
+                      background: replyAuthor === name ? color : 'var(--bg)',
+                      color: replyAuthor === name ? '#fff' : 'var(--text-sub)',
+                      border: `1.5px solid ${replyAuthor === name ? color : 'var(--border)'}`,
+                    }}
+                  >{name}</button>
+                ))}
+              </div>
+              <input
+                value={replyText}
+                onChange={e => setReplyText(e.target.value)}
+                placeholder="답변을 입력해요"
+                className="w-full outline-none rounded-xl px-3 py-2"
+                style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}
+              />
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => { setReplyOpen(false); setReplyText(''); setReplyAuthor(''); }}
+                  className="rounded-xl px-3 py-1.5 font-semibold"
+                  style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text-sub)' }}
+                >취소</button>
+                <button
+                  onClick={() => {
+                    if (!replyText.trim() || !replyAuthor) return;
+                    const msg: WbMessage = { id: Date.now().toString(), author: replyAuthor, text: replyText.trim(), ts: Date.now() };
+                    const next = { ...wb, replies: [...wb.replies, msg] };
+                    setWb(next); saveWb(next);
+                    setReplyOpen(false); setReplyText(''); setReplyAuthor('');
+                  }}
+                  className="rounded-xl px-3 py-1.5 font-semibold"
+                  style={{ fontSize: 12, background: 'var(--primary)', color: '#fff' }}
+                >남기기</button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setReplyOpen(true)}
+              className="w-full py-2.5 text-center"
+              style={{ fontSize: 12, color: 'var(--text-sub)', borderTop: '1px solid var(--border)' }}
+            >
+              💬 답변 남기기
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Student Cards */}
-      <div className="px-4 py-5 space-y-3">
-        {/* 이달 포인트 안내 */}
-        <div className="rounded-2xl px-4 py-3 mb-1" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
-          <div className="flex items-center gap-2 mb-2">
-            <span style={{ fontSize: 18 }}>💰</span>
-            <p className="font-bold" style={{ fontSize: 13, color: 'var(--text)' }}>이달 포인트 정산 기준</p>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-xl px-3 py-2" style={{ background: 'var(--bg)' }}>
-              <p className="font-bold" style={{ fontSize: 11, color: 'var(--text-sub)', marginBottom: 4 }}>📅 매일 숙제</p>
-              <p style={{ fontSize: 11, color: 'var(--text-sub)' }}>전부 완료한 날 <span style={{ color: 'var(--success)', fontWeight: 700 }}>+500원</span></p>
-              <p style={{ fontSize: 11, color: 'var(--text-sub)' }}>지난 날 미완료 <span style={{ color: 'var(--error)', fontWeight: 700 }}>-500원</span></p>
-            </div>
-            <div className="rounded-xl px-3 py-2" style={{ background: 'var(--bg)' }}>
-              <p className="font-bold" style={{ fontSize: 11, color: 'var(--text-sub)', marginBottom: 4 }}>✨ 오늘만 숙제</p>
-              <p style={{ fontSize: 11, color: 'var(--text-sub)' }}>그날 전부 완료 시 <span style={{ color: 'var(--success)', fontWeight: 700 }}>+300원</span></p>
-              <p style={{ fontSize: 11, color: 'var(--text-sub)' }}>매월 1일 초기화</p>
-            </div>
-          </div>
-        </div>
-
+      <div className="px-4 py-4 space-y-3">
         {data.students.map((student, i) => {
-          const pts = calcMonthlyPoints(student.id, homework);
-          const totalColor = pts.total > 0 ? 'var(--success)' : pts.total < 0 ? 'var(--error)' : 'var(--text-sub)';
-          const dailyColor = pts.daily > 0 ? 'var(--success)' : pts.daily < 0 ? 'var(--error)' : 'var(--text-sub)';
-          const onedayColor = pts.oneday > 0 ? 'var(--success)' : 'var(--text-sub)';
+          const pts = calcPoints(student.id, homework, viewDate, todayStr);
+          const totalColor = pts.monthlyTotal > 0 ? 'var(--success)' : pts.monthlyTotal < 0 ? 'var(--error)' : 'var(--text-sub)';
+          const dailyColor = pts.todayDaily > 0 ? 'var(--success)' : 'var(--text-sub)';
+          const onedayColor = pts.todayOneday > 0 ? 'var(--success)' : 'var(--text-sub)';
 
           return (
           <div
@@ -237,67 +473,63 @@ function HomeContent() {
           >
             <button
               onClick={() => goToStudent(student.id)}
-              className="w-full text-left rounded-2xl p-5 transition-all"
-              style={{
-                background: 'var(--surface)',
-                boxShadow: 'var(--shadow)',
-                border: `2px solid transparent`,
-              }}
-              onMouseEnter={e => (e.currentTarget.style.borderColor = student.color)}
-              onMouseLeave={e => (e.currentTarget.style.borderColor = 'transparent')}
+              className="w-full text-left rounded-2xl p-5 transition-all active:scale-[0.99]"
+              style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}
             >
-              {/* 학생 기본 정보 */}
-              <div className="flex items-center gap-4 mb-4">
-                <AvatarDisplay photo={student.photo} avatar={student.avatar} color={student.color} size={56} />
+              {/* 학생 정보 + 이달 합계 */}
+              <div className="flex items-center gap-3 mb-4">
+                <AvatarDisplay photo={student.photo} avatar={student.avatar} color={student.color} size={48} />
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold" style={{ fontSize: 20, color: 'var(--text)' }}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold" style={{ fontSize: 18, color: 'var(--text)' }}>
                       {student.name}
                     </span>
                     <span
-                      className="rounded-full px-2 py-0.5 font-medium"
-                      style={{ fontSize: 12, background: student.color + '18', color: student.color }}
+                      className="rounded-full px-2 py-0.5 font-semibold"
+                      style={{ fontSize: 11, background: student.color + '18', color: student.color }}
                     >
                       {student.grade}
                     </span>
                   </div>
-                  <p className="mt-0.5" style={{ color: 'var(--text-sub)', fontSize: 13 }}>
-                    탭해서 공부 현황 보기
-                  </p>
+                  <p style={{ fontSize: 12, color: 'var(--text-sub)', marginTop: 2 }}>숙제 현황 보기</p>
                 </div>
-                {/* 총 포인트 */}
-                <div className="flex flex-col items-end flex-shrink-0">
-                  <span className="font-bold" style={{ fontSize: 20, color: totalColor, lineHeight: 1 }}>
-                    {formatPoints(pts.total)}
-                  </span>
-                  <span style={{ fontSize: 10, color: 'var(--text-sub)', marginTop: 2 }}>이달 합계</span>
+                <div className="text-right flex-shrink-0">
+                  <div className="font-bold" style={{ fontSize: 22, color: totalColor, letterSpacing: '-0.02em', lineHeight: 1 }}>
+                    {formatPoints(pts.monthlyTotal)}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-sub)', marginTop: 3 }}>이달 합계</div>
                 </div>
               </div>
 
-              {/* 포인트 내역 바 */}
-              <div
-                className="rounded-xl px-4 py-3 grid grid-cols-2 gap-3"
-                style={{ background: 'var(--bg)' }}
-              >
-                <div className="flex flex-col gap-0.5">
-                  <span style={{ fontSize: 10, color: 'var(--text-sub)', fontWeight: 600 }}>📅 매일 숙제</span>
-                  <span className="font-bold" style={{ fontSize: 15, color: dailyColor }}>
-                    {formatPointsShort(pts.daily)}
-                  </span>
+              {/* 구분선 */}
+              <div style={{ height: 1, background: 'var(--border)', marginBottom: 14 }} />
+
+              {/* 포인트 내역 */}
+              <div className="flex justify-between">
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-sub)', marginBottom: 3 }}>
+                    📅 매일 숙제
+                  </div>
+                  <div className="font-bold" style={{ fontSize: 16, color: dailyColor }}>
+                    {formatPointsShort(pts.todayDaily)}
+                  </div>
                 </div>
-                <div className="flex flex-col gap-0.5">
-                  <span style={{ fontSize: 10, color: 'var(--text-sub)', fontWeight: 600 }}>✨ 오늘만 숙제</span>
-                  <span className="font-bold" style={{ fontSize: 15, color: onedayColor }}>
-                    {formatPointsShort(pts.oneday)}
-                  </span>
+                <div style={{ width: 1, background: 'var(--border)' }} />
+                <div className="text-right">
+                  <div style={{ fontSize: 11, color: 'var(--text-sub)', marginBottom: 3 }}>
+                    ✨ 오늘만 숙제
+                  </div>
+                  <div className="font-bold" style={{ fontSize: 16, color: onedayColor }}>
+                    {formatPointsShort(pts.todayOneday)}
+                  </div>
                 </div>
               </div>
             </button>
 
             <button
               onClick={() => startEdit(student.id)}
-              className="mt-1 ml-1 text-xs"
-              style={{ color: 'var(--text-sub)' }}
+              className="mt-1 ml-1"
+              style={{ fontSize: 12, color: 'var(--text-sub)' }}
             >
               프로필 수정
             </button>
@@ -441,7 +673,9 @@ function HomeContent() {
 export default function Home() {
   return (
     <AppProvider>
-      <HomeContent />
+      <Suspense>
+        <HomeContent />
+      </Suspense>
     </AppProvider>
   );
 }

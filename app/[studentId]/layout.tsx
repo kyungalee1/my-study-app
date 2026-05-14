@@ -5,7 +5,7 @@ import { AppProvider, useApp } from '../lib/store';
 import type { StudentId } from '../lib/types';
 
 const navItems = [
-  { path: '', label: '홈', icon: HomeIcon },
+  { path: '', label: '홈', icon: HomeIcon, rootNav: true },
   { path: '/subjects', label: '과목', icon: SubjectsIcon },
   { path: '/homework', label: '숙제', icon: HomeworkIcon },
   { path: '/stats', label: '통계', icon: StatsIcon },
@@ -88,8 +88,10 @@ function BottomNav({ studentId }: { studentId: StudentId }) {
     >
       <div className="flex">
         {navItems.map(item => {
-          const href = `/${studentId}${item.path}`;
-          const active = pathname === href;
+          const href = item.rootNav ? '/' : `/${studentId}${item.path}`;
+          const active = item.rootNav
+            ? pathname === `/${studentId}`
+            : pathname === `/${studentId}${item.path}`;
           const Icon = item.icon;
           return (
             <button

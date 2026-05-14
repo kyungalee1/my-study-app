@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useApp } from '../../lib/store';
 import type { StudentId, Subject } from '../../lib/types';
@@ -11,12 +11,100 @@ const SUBJECT_COLORS = [
   '#2ECC71', '#3498DB',
 ];
 
+const PASSWORD = '2925';
+
 type FormState = {
   name: string;
   color: string;
 };
 
 const emptyForm: FormState = { name: '', color: SUBJECT_COLORS[0] };
+
+function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
+  const [input, setInput] = useState('');
+  const [error, setError] = useState(false);
+  const [shake, setShake] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  function handleSubmit() {
+    if (input === PASSWORD) {
+      onUnlock();
+    } else {
+      setError(true);
+      setShake(true);
+      setInput('');
+      setTimeout(() => setShake(false), 500);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+      <div
+        className="w-full rounded-3xl p-8 flex flex-col items-center"
+        style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', maxWidth: 360 }}
+      >
+        <div
+          className="rounded-2xl flex items-center justify-center mb-5"
+          style={{ width: 64, height: 64, background: 'var(--primary-light)' }}
+        >
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="11" width="18" height="11" rx="2" stroke="var(--primary)" strokeWidth="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <h2 className="font-bold mb-1" style={{ fontSize: 20, color: 'var(--text)' }}>과목 관리</h2>
+        <p className="mb-6 text-center" style={{ fontSize: 14, color: 'var(--text-sub)' }}>비밀번호를 입력해주세요</p>
+
+        <div
+          className="w-full rounded-2xl px-4 flex items-center mb-3"
+          style={{
+            border: `1.5px solid ${error ? 'var(--error)' : 'var(--border)'}`,
+            background: 'var(--bg)',
+            animation: shake ? 'shake 0.4s ease' : undefined,
+          }}
+        >
+          <input
+            ref={inputRef}
+            type="password"
+            value={input}
+            onChange={e => { setInput(e.target.value); setError(false); }}
+            onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
+            className="flex-1 py-4 outline-none font-bold text-center tracking-widest"
+            style={{ background: 'transparent', fontSize: 22, color: 'var(--text)', letterSpacing: 12 }}
+            placeholder="••••"
+            maxLength={10}
+          />
+        </div>
+
+        {error && (
+          <p className="mb-3 font-semibold" style={{ fontSize: 13, color: 'var(--error)' }}>
+            비밀번호가 틀렸습니다
+          </p>
+        )}
+
+        <button
+          onClick={handleSubmit}
+          className="w-full py-4 rounded-2xl font-bold mt-1"
+          style={{ background: 'var(--primary)', color: '#fff', fontSize: 16 }}
+        >
+          확인
+        </button>
+      </div>
+
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          20% { transform: translateX(-8px); }
+          40% { transform: translateX(8px); }
+          60% { transform: translateX(-6px); }
+          80% { transform: translateX(6px); }
+        }
+      `}</style>
+    </div>
+  );
+}
 
 export default function SubjectsPage() {
   const params = useParams();
@@ -27,10 +115,13 @@ export default function SubjectsPage() {
   const student = data.students.find(s => s.id === studentId);
   const subjects = getStudentSubjects(studentId);
 
+  const [unlocked, setUnlocked] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  if (!unlocked) return <PasswordGate onUnlock={() => setUnlocked(true)} />;
 
   function openAdd() { setForm(emptyForm); setEditId(null); setShowAdd(true); }
 
@@ -63,14 +154,13 @@ export default function SubjectsPage() {
       {/* Header */}
       <div className="px-5 pt-14 pb-5" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
         <button
-          onClick={() => router.push('/')}
-          className="flex items-center gap-1 mb-3"
-          style={{ color: 'var(--text-sub)', fontSize: 14 }}
+          onClick={() => router.back()}
+          className="flex items-center justify-center rounded-full mb-3 active:opacity-50 transition-opacity"
+          style={{ width: 36, height: 36, background: 'var(--bg)', color: 'var(--text-sub)' }}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M13 5L8 10l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          전체 학생
         </button>
         <div className="flex items-center gap-2 mb-1">
           <span style={{ fontSize: 20 }}>{student?.avatar}</span>

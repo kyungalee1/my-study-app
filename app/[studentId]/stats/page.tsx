@@ -1,13 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useApp } from '../../lib/store';
-import type { HomeworkItem, StudentId } from '../../lib/types';
+import type { HomeworkItem, Student, StudentId } from '../../lib/types';
 
 type Period = 'week' | 'month';
 
 // ── 날짜 유틸 ──────────────────────────────────────────────
+function toLocalDateStr(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function getWeekDates(): string[] {
   const now = new Date();
   const day = now.getDay();
@@ -18,177 +21,166 @@ function getWeekDates(): string[] {
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday);
     d.setDate(monday.getDate() + i);
-    return d.toISOString().split('T')[0];
+    return toLocalDateStr(d);
   });
 }
 
 function getMonthDates(): string[] {
   const now = new Date();
   const last = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return Array.from({ length: last }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth(), i + 1);
-    return d.toISOString().split('T')[0];
-  });
+  return Array.from({ length: last }, (_, i) =>
+    toLocalDateStr(new Date(now.getFullYear(), now.getMonth(), i + 1))
+  );
 }
 
 function getWeekLabel(): string {
   const dates = getWeekDates();
-  const s = new Date(dates[0]);
-  const e = new Date(dates[6]);
-  return `${s.getMonth() + 1}/${s.getDate()}~${e.getMonth() + 1}/${e.getDate()}`;
+  const s = new Date(dates[0] + 'T12:00:00');
+  const e = new Date(dates[6] + 'T12:00:00');
+  return `${s.getMonth() + 1}/${s.getDate()}–${e.getMonth() + 1}/${e.getDate()}`;
 }
 
 function getMonthLabel(): string {
   const now = new Date();
-  return `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}월`;
+  return `${now.getMonth() + 1}월`;
 }
 
-const WEEK_LABELS = ['월', '화', '수', '목', '금', '토', '일'];
+const WEEK_DAY_LABELS = ['월', '화', '수', '목', '금', '토', '일'];
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
+const SKIP_DATES = new Set(['2026-05-13']);
 
-// ── 학생별 통계 계산 ─────────────────────────────────────────
-type DayStat = { completed: number; pending: number };
+// ── 타입 & 계산 ─────────────────────────────────────────────
+type HwDot = { id: string; title: string; done: boolean };
+type DayStat = { completed: number; pending: number; items: HwDot[] };
 
-function calcStudentStats(
+function calcStats(
   studentId: StudentId,
   homework: HomeworkItem[],
   periodDates: string[]
-) {
-  const today = new Date().toISOString().split('T')[0];
+): Record<string, DayStat> {
+  const today = toLocalDateStr(new Date());
   const byDate: Record<string, DayStat> = {};
-  for (const d of periodDates) byDate[d] = { completed: 0, pending: 0 };
+  for (const d of periodDates) byDate[d] = { completed: 0, pending: 0, items: [] };
 
   const myHw = homework.filter(h => h.studentId === studentId);
 
   for (const date of periodDates) {
-    if (date > today) continue; // 미래 날짜 제외
+    if (date > today || SKIP_DATES.has(date)) continue;
 
     for (const hw of myHw) {
-      const createdDate = hw.createdAt.split('T')[0];
+      const _cd = new Date(hw.createdAt);
+      const created = `${_cd.getFullYear()}-${String(_cd.getMonth()+1).padStart(2,'0')}-${String(_cd.getDate()).padStart(2,'0')}`;
 
       if (hw.isDaily) {
-        // 매일 숙제: 등록일 이후 날짜마다 활성화 + 요일 필터
-        if (createdDate > date) continue;
-        const dayLabel = DAY_LABELS[new Date(date).getDay()];
+        if (created > date) continue;
+        const dayLabel = DAY_LABELS[new Date(date + 'T12:00:00').getDay()];
         const scheduled =
           hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')
-            ? true
-            : hw.scheduledDays.includes(dayLabel);
+            ? true : hw.scheduledDays.includes(dayLabel);
         if (!scheduled) continue;
-        const done = hw.completedDate === date;
-        if (done) byDate[date].completed++;
-        else byDate[date].pending++;
+        const done = hw.completedDates.includes(date);
+        byDate[date].items.push({ id: hw.id, title: hw.title, done });
+        done ? byDate[date].completed++ : byDate[date].pending++;
       } else {
-        // 오늘만 숙제: 생성한 날에만 집계
-        if (createdDate !== date) continue;
-        if (hw.completed) byDate[date].completed++;
-        else byDate[date].pending++;
+        if (created !== date) continue;
+        byDate[date].items.push({ id: hw.id, title: hw.title, done: hw.completed });
+        hw.completed ? byDate[date].completed++ : byDate[date].pending++;
       }
     }
   }
-
-  // 활동일수: 해당 기간 내 숙제가 1개 이상 있는 날 (오늘 포함, 미래 제외)
-  const studyDays = Object.entries(byDate).filter(
-    ([date, v]) => date <= today && v.completed + v.pending > 0
-  ).length;
-
-  // 완료일: 그날 활성화된 숙제가 1개 이상이고 전부 완료된 날
-  const completedDays = Object.entries(byDate).filter(
-    ([date, v]) => date <= today && v.completed + v.pending > 0 && v.pending === 0
-  ).length;
-
-  return { byDate, studyDays, completedDays };
+  return byDate;
 }
 
-// ── 막대차트 ─────────────────────────────────────────────────
-function DayBarChart({
+// ── 주간 통합 뷰 ─────────────────────────────────────────────
+function WeekView({
   dates,
-  byDate,
-  color,
-  isWeek,
+  students,
+  allStats,
 }: {
   dates: string[];
-  byDate: Record<string, DayStat>;
-  color: string;
-  isWeek: boolean;
+  students: Student[];
+  allStats: Record<StudentId, Record<string, DayStat>>;
 }) {
-  const today = new Date().toISOString().split('T')[0];
-  const maxVal = Math.max(...dates.map(d => (byDate[d]?.completed ?? 0) + (byDate[d]?.pending ?? 0)), 1);
-
-  const hasAny = dates.some(d => (byDate[d]?.completed ?? 0) + (byDate[d]?.pending ?? 0) > 0);
-
-  if (!hasAny) {
-    return (
-      <div className="flex flex-col items-center py-6" style={{ color: 'var(--text-sub)' }}>
-        <span style={{ fontSize: 32, marginBottom: 8 }}>📋</span>
-        <p style={{ fontSize: 13 }}>아직 숙제 기록이 없어요</p>
-      </div>
-    );
-  }
+  const today = toLocalDateStr(new Date());
 
   return (
     <div>
-      {/* Legend */}
-      <div className="flex gap-3 mb-3">
-        <div className="flex items-center gap-1">
-          <div className="w-2.5 h-2.5 rounded-sm" style={{ background: 'var(--success)' }} />
-          <span style={{ fontSize: 11, color: 'var(--text-sub)' }}>완료</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="w-2.5 h-2.5 rounded-sm" style={{ background: '#E5E8EB' }} />
-          <span style={{ fontSize: 11, color: 'var(--text-sub)' }}>미완료</span>
-        </div>
-      </div>
-
-      <div className="flex items-end gap-1" style={{ height: 110 }}>
+      {/* 날짜 헤더 */}
+      <div className="flex mb-3" style={{ paddingLeft: 52 }}>
         {dates.map((date, i) => {
-          const stat = byDate[date] ?? { completed: 0, pending: 0 };
-          const total = stat.completed + stat.pending;
-          const totalPct = total > 0 ? (total / maxVal) * 100 : 0;
-          const completedPct = total > 0 ? (stat.completed / total) * 100 : 0;
           const isToday = date === today;
-          const label = isWeek ? WEEK_LABELS[i] : String(parseInt(date.split('-')[2]));
-
+          const dayNum = parseInt(date.split('-')[2]);
           return (
             <div key={date} className="flex-1 flex flex-col items-center gap-0.5">
-              <div className="w-full flex flex-col justify-end rounded-t-md overflow-hidden" style={{ height: 90 }}>
-                {total > 0 ? (
-                  <div
-                    className="w-full flex flex-col justify-end rounded-t-md overflow-hidden"
-                    style={{ height: `${totalPct}%`, minHeight: 4 }}
-                  >
-                    {/* pending on top */}
-                    {stat.pending > 0 && (
-                      <div
-                        style={{
-                          height: `${100 - completedPct}%`,
-                          minHeight: stat.pending > 0 ? 3 : 0,
-                          background: isToday ? '#C9CDD2' : '#E5E8EB',
-                        }}
-                      />
-                    )}
-                    {/* completed on bottom */}
-                    {stat.completed > 0 && (
-                      <div
-                        style={{
-                          height: `${completedPct}%`,
-                          minHeight: stat.completed > 0 ? 3 : 0,
-                          background: 'var(--success)',
-                        }}
-                      />
-                    )}
-                  </div>
-                ) : null}
-              </div>
-              <span
+              <span style={{ fontSize: 10, color: isToday ? 'var(--primary)' : 'var(--text-sub)', fontWeight: isToday ? 700 : 400 }}>
+                {WEEK_DAY_LABELS[i]}
+              </span>
+              <div
+                className="rounded-full flex items-center justify-center"
                 style={{
-                  fontSize: isWeek ? 11 : 9,
-                  color: isToday ? color : 'var(--text-light)',
-                  fontWeight: isToday ? 700 : 500,
+                  width: 22, height: 22,
+                  background: isToday ? 'var(--primary)' : 'transparent',
+                  fontSize: 11, fontWeight: isToday ? 700 : 400,
+                  color: isToday ? '#fff' : 'var(--text-sub)',
                 }}
               >
-                {label}
-              </span>
+                {dayNum}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 구분선 */}
+      <div style={{ height: 1, background: 'var(--border)', marginBottom: 12 }} />
+
+      {/* 학생별 행 */}
+      <div className="space-y-4">
+        {students.map(student => {
+          const byDate = allStats[student.id] ?? {};
+          return (
+            <div key={student.id} className="flex items-start gap-2">
+              {/* 학생 라벨 */}
+              <div className="flex flex-col items-center gap-1 flex-shrink-0" style={{ width: 44 }}>
+                {student.photo ? (
+                  <img src={student.photo} alt="" style={{ width: 28, height: 28, borderRadius: 8, objectFit: 'cover', border: `2px solid ${student.color}` }} />
+                ) : (
+                  <div className="rounded-lg flex items-center justify-center" style={{ width: 28, height: 28, background: student.color + '20', fontSize: 16, border: `1.5px solid ${student.color}40` }}>
+                    {student.avatar}
+                  </div>
+                )}
+                <span style={{ fontSize: 9, color: 'var(--text-sub)', fontWeight: 600, textAlign: 'center', lineHeight: 1.2 }}>
+                  {student.name}
+                </span>
+              </div>
+
+              {/* 날짜별 점 */}
+              {dates.map(date => {
+                const stat = byDate[date] ?? { items: [] };
+                const isFuture = date > today;
+                return (
+                  <div key={date} className="flex-1 flex flex-col items-center gap-1 pt-1">
+                    {isFuture ? (
+                      <div className="rounded-full" style={{ width: 8, height: 8, background: 'var(--border)' }} />
+                    ) : stat.items.length === 0 ? (
+                      <div style={{ width: 8, height: 8 }} />
+                    ) : (
+                      stat.items.map(item => (
+                        <div
+                          key={item.id}
+                          className="rounded-full flex-shrink-0"
+                          title={item.title}
+                          style={{
+                            width: 10, height: 10,
+                            background: item.done ? student.color : '#E5E8EB',
+                            border: item.done ? 'none' : `1.5px solid #C9CDD2`,
+                          }}
+                        />
+                      ))
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -197,9 +189,102 @@ function DayBarChart({
   );
 }
 
+// ── 월간 통합 뷰 ─────────────────────────────────────────────
+function MonthView({
+  dates,
+  students,
+  allStats,
+}: {
+  dates: string[];
+  students: Student[];
+  allStats: Record<StudentId, Record<string, DayStat>>;
+}) {
+  const today = toLocalDateStr(new Date());
+
+  // 달력 그리드 구성
+  const firstDate = new Date(dates[0] + 'T12:00:00');
+  let startDow = firstDate.getDay();
+  startDow = startDow === 0 ? 6 : startDow - 1;
+
+  const cells: (string | null)[] = [...Array(startDow).fill(null), ...dates];
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks: (string | null)[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+
+  return (
+    <div>
+      {/* 요일 헤더 */}
+      <div className="grid grid-cols-7 mb-2">
+        {['월','화','수','목','금','토','일'].map(d => (
+          <div key={d} className="text-center" style={{ fontSize: 10, color: 'var(--text-sub)', fontWeight: 600 }}>{d}</div>
+        ))}
+      </div>
+
+      {/* 주 행 */}
+      <div className="space-y-1">
+        {weeks.map((week, wi) => (
+          <div key={wi} className="grid grid-cols-7 gap-y-1">
+            {week.map((date, di) => {
+              if (!date) return <div key={di} />;
+
+              const isToday = date === today;
+              const isFuture = date > today;
+              const dayNum = parseInt(date.split('-')[2]);
+
+              return (
+                <div key={di} className="flex flex-col items-center" style={{ minHeight: 50 }}>
+                  {/* 날짜 */}
+                  <div
+                    className="rounded-full flex items-center justify-center mb-1"
+                    style={{
+                      width: 20, height: 20,
+                      background: isToday ? 'var(--primary)' : 'transparent',
+                      fontSize: 10,
+                      fontWeight: isToday ? 700 : 400,
+                      color: isToday ? '#fff' : isFuture ? 'var(--border)' : 'var(--text-sub)',
+                    }}
+                  >
+                    {dayNum}
+                  </div>
+
+                  {/* 학생별 점 그룹 */}
+                  {!isFuture && (
+                    <div className="flex flex-col gap-0.5 items-center w-full">
+                      {students.map(student => {
+                        const stat = allStats[student.id]?.[date] ?? { items: [] };
+                        if (stat.items.length === 0) return null;
+                        return (
+                          <div key={student.id} className="flex flex-wrap justify-center gap-0.5" style={{ maxWidth: 32 }}>
+                            {stat.items.map(item => (
+                              <div
+                                key={item.id}
+                                className="rounded-full"
+                                title={`${student.name}: ${item.title}`}
+                                style={{
+                                  width: 6, height: 6,
+                                  background: item.done ? student.color : '#E5E8EB',
+                                  border: item.done ? 'none' : '1px solid #C9CDD2',
+                                  flexShrink: 0,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 페이지 ───────────────────────────────────────────────
 export default function StatsPage() {
-  const router = useRouter();
   const { data } = useApp();
   const [period, setPeriod] = useState<Period>('week');
 
@@ -209,30 +294,30 @@ export default function StatsPage() {
 
   const students = data.students;
   const homework = data.homework;
+  const today = toLocalDateStr(new Date());
 
-  const statsMap = Object.fromEntries(
-    students.map(s => [s.id, calcStudentStats(s.id, homework, periodDates)])
-  ) as Record<StudentId, ReturnType<typeof calcStudentStats>>;
+  const allStats = Object.fromEntries(
+    students.map(s => [s.id, calcStats(s.id, homework, periodDates)])
+  ) as Record<StudentId, Record<string, DayStat>>;
+
+  // 학생별 요약 수치
+  const summaries = students.map(s => {
+    const byDate = allStats[s.id] ?? {};
+    const activeDates = periodDates.filter(d => d <= today && !SKIP_DATES.has(d) && (byDate[d]?.items.length ?? 0) > 0);
+    const completedDays = activeDates.filter(d => byDate[d].pending === 0).length;
+    const activeDays = activeDates.length;
+    return { student: s, completedDays, activeDays };
+  });
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       {/* Header */}
-      <div className="px-5 pt-14 pb-5" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
-        <button
-          onClick={() => router.push('/')}
-          className="flex items-center gap-1 mb-3"
-          style={{ color: 'var(--text-sub)', fontSize: 14 }}
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          전체 학생
-        </button>
-        <h1 className="font-bold mb-1" style={{ fontSize: 22, color: 'var(--text)' }}>학습 통계</h1>
-        <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>전체 학생 숙제 완료 현황을 비교해요</p>
+      <div className="px-5 pt-14 pb-4" style={{ background: 'var(--surface)' }}>
+        <h1 className="font-bold" style={{ fontSize: 22, color: 'var(--text)' }}>학습 통계</h1>
+        <p style={{ fontSize: 13, color: 'var(--text-sub)', marginTop: 2 }}>숙제 완료 현황 비교</p>
       </div>
 
-      <div className="px-4 py-5 space-y-5">
+      <div className="px-4 py-4 space-y-4">
         {/* Period Toggle */}
         <div className="flex rounded-2xl p-1" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
           {(['week', 'month'] as Period[]).map(p => (
@@ -246,101 +331,62 @@ export default function StatsPage() {
                 color: period === p ? '#fff' : 'var(--text-sub)',
               }}
             >
-              {p === 'week' ? getWeekLabel() : getMonthLabel()}
+              {p === 'week' ? `이번 주  ${getWeekLabel()}` : `이번 달  ${getMonthLabel()}`}
             </button>
           ))}
         </div>
 
-        {/* ── 학생별 상세 ── */}
-        {students.map((student, idx) => {
-          const st = statsMap[student.id];
-          // 날짜 기준 완료/미완료
-          const completedDays = st.completedDays;                    // 그날 숙제 전부 완료
-          const incompleteDays = st.studyDays - st.completedDays;    // 활동했지만 미완료인 날
-          const totalPeriodDays = periodDates.length;                 // 주=7, 월=실제 일수
-
-          return (
-            <div
-              key={student.id}
-              className="rounded-2xl overflow-hidden animate-fadein"
-              style={{
-                background: 'var(--surface)',
-                boxShadow: 'var(--shadow)',
-                animationDelay: `${idx * 0.06}s`,
-              }}
-            >
-              {/* Student Header */}
-              <div
-                className="px-5 py-4 flex items-center gap-3"
-                style={{ background: student.color + '12', borderBottom: '1px solid var(--border)' }}
-              >
+        {/* 학생 요약 카드 */}
+        <div className="grid grid-cols-2 gap-3">
+          {summaries.map(({ student, completedDays, activeDays }) => (
+            <div key={student.id} className="rounded-2xl p-4" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', borderTop: `3px solid ${student.color}` }}>
+              <div className="flex items-center gap-2 mb-3">
                 {student.photo ? (
-                  <img
-                    src={student.photo}
-                    alt=""
-                    style={{ width: 40, height: 40, borderRadius: 13, objectFit: 'cover', border: `2px solid ${student.color}40` }}
-                  />
+                  <img src={student.photo} alt="" style={{ width: 28, height: 28, borderRadius: 8, objectFit: 'cover' }} />
                 ) : (
-                  <div
-                    className="rounded-2xl flex items-center justify-center"
-                    style={{ width: 40, height: 40, background: student.color + '25', fontSize: 22 }}
-                  >
+                  <div className="rounded-lg flex items-center justify-center" style={{ width: 28, height: 28, background: student.color + '18', fontSize: 16 }}>
                     {student.avatar}
                   </div>
                 )}
                 <div>
-                  <p className="font-bold" style={{ fontSize: 16, color: 'var(--text)' }}>{student.name}</p>
-                  <p style={{ fontSize: 12, color: 'var(--text-sub)' }}>{student.grade}</p>
-                </div>
-                <div className="ml-auto">
-                  <span
-                    className="rounded-full px-2.5 py-1 font-semibold"
-                    style={{ fontSize: 11, background: student.color + '18', color: student.color }}
-                  >
-                    {period === 'week' ? getWeekLabel() : getMonthLabel()}
-                  </span>
+                  <p className="font-bold" style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.2 }}>{student.name}</p>
+                  <p style={{ fontSize: 11, color: 'var(--text-sub)' }}>{student.grade}</p>
                 </div>
               </div>
-
-              <div className="p-5 space-y-5">
-                {/* Summary — 날짜 기준 (단일) */}
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="rounded-xl p-3 text-center" style={{ background: 'var(--bg)' }}>
-                    <p style={{ fontSize: 10, color: 'var(--text-sub)', fontWeight: 600 }}>활동일수</p>
-                    <p className="font-bold mt-1" style={{ fontSize: 22, color: 'var(--text)' }}>{st.studyDays}</p>
-                    <p style={{ fontSize: 10, color: 'var(--text-sub)' }}>일</p>
-                  </div>
-                  <div className="rounded-xl p-3 text-center" style={{ background: '#E6F9F5' }}>
-                    <p style={{ fontSize: 10, color: '#00875A', fontWeight: 600 }}>완료일</p>
-                    <p className="font-bold mt-1" style={{ fontSize: 22, color: 'var(--success)' }}>{completedDays}</p>
-                    <p style={{ fontSize: 10, color: '#00875A' }}>일</p>
-                  </div>
-                  <div className="rounded-xl p-3 text-center" style={{ background: student.color + '12' }}>
-                    <p style={{ fontSize: 10, color: student.color, fontWeight: 600 }}>완료율</p>
-                    <p className="font-bold mt-1" style={{ fontSize: 16, color: student.color, lineHeight: 1.2 }}>
-                      {completedDays}/{totalPeriodDays}
-                    </p>
-                    <p style={{ fontSize: 10, color: student.color }}>일 완료</p>
-                  </div>
-                </div>
-
-                {/* Bar chart */}
-                <div>
-                  <p className="font-bold mb-3" style={{ fontSize: 14, color: 'var(--text)' }}>
-                    {period === 'week' ? '요일별' : '날짜별'} 완료 현황
-                  </p>
-                  <DayBarChart
-                    dates={periodDates}
-                    byDate={st.byDate}
-                    color={student.color}
-                    isWeek={period === 'week'}
-                  />
-                </div>
+              <div className="flex items-end gap-1">
+                <span className="font-bold" style={{ fontSize: 26, color: student.color, lineHeight: 1 }}>{completedDays}</span>
+                <span style={{ fontSize: 12, color: 'var(--text-sub)', marginBottom: 2 }}>/ {activeDays}일</span>
               </div>
+              <p style={{ fontSize: 11, color: 'var(--text-sub)', marginTop: 2 }}>숙제 있던 날 완료</p>
             </div>
-          );
-        })}
+          ))}
+        </div>
+
+        {/* 범례 */}
+        <div className="flex flex-wrap gap-3 px-1">
+          {students.map(s => (
+            <div key={s.id} className="flex items-center gap-1.5">
+              <div className="rounded-full" style={{ width: 10, height: 10, background: s.color }} />
+              <span style={{ fontSize: 12, color: 'var(--text-sub)', fontWeight: 600 }}>{s.name} 완료</span>
+            </div>
+          ))}
+          <div className="flex items-center gap-1.5">
+            <div className="rounded-full" style={{ width: 10, height: 10, background: '#E5E8EB', border: '1.5px solid #C9CDD2' }} />
+            <span style={{ fontSize: 12, color: 'var(--text-sub)' }}>미완료</span>
+          </div>
+        </div>
+
+        {/* 통합 그래프 */}
+        <div className="rounded-2xl p-5 animate-fadein" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
+          {period === 'week' ? (
+            <WeekView dates={weekDates} students={students} allStats={allStats} />
+          ) : (
+            <MonthView dates={monthDates} students={students} allStats={allStats} />
+          )}
+        </div>
       </div>
+
+      <div style={{ height: 80 }} />
     </div>
   );
 }

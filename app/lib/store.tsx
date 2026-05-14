@@ -77,10 +77,18 @@ function sessionToRow(s: StudySession): SessionRow {
   return { id: s.id, student_id: s.studentId, subject_id: s.subjectId, date: s.date, duration_minutes: s.durationMinutes };
 }
 
-/** due_date 인코딩: isDaily/completedDate/scheduledDays → due_date 문자열 */
+/**
+ * due_date 인코딩: isDaily/completedDates/scheduledDays → due_date 문자열
+ *
+ * 인코딩 규칙:
+ *   daily:   "__daily__|매일"              → 매일 숙제, 미완료
+ *            "__daily__|월,화"             → 매일 숙제, 월·화, 미완료
+ *            "__daily__|월,화|2026-05-12;2026-05-13" → 해당 날짜들에 완료
+ *   one-time: null / "YYYY-MM-DD"
+ */
 function encodeDueDate(
   isDaily: boolean,
-  completedDate: string | null,
+  completedDates: string[],
   actualDueDate: string | null,
   scheduledDays: string[],
 ): string | null {
@@ -89,39 +97,46 @@ function encodeDueDate(
     scheduledDays.length === 0 || scheduledDays.includes('매일')
       ? '매일'
       : scheduledDays.join(',');
-  return completedDate
-    ? `__daily__|${daysStr}|${completedDate}`
+  const datesStr = completedDates.length > 0 ? completedDates.join(';') : '';
+  return datesStr
+    ? `__daily__|${daysStr}|${datesStr}`
     : `__daily__|${daysStr}`;
 }
 
-/** due_date 디코딩: due_date 문자열 → isDaily/completedDate/dueDate/scheduledDays */
+/** due_date 디코딩: due_date 문자열 → isDaily/completedDates/dueDate/scheduledDays */
 function decodeDueDate(dueDate: string | null): {
   isDaily: boolean;
-  completedDate: string | null;
+  completedDates: string[];
   actualDueDate: string | null;
   scheduledDays: string[];
 } {
   if (dueDate?.startsWith('__daily__')) {
-    // 신규 형식: __daily__|days[|YYYY-MM-DD]
     if (dueDate.includes('|')) {
       const parts = dueDate.split('|');
       const daysStr = parts[1] ?? '매일';
-      const completedDate = parts[2] ?? null;
+      const datesRaw = parts[2] ?? '';
       const scheduledDays =
         daysStr === '매일' ? ['매일'] : daysStr.split(',').filter(Boolean);
-      return { isDaily: true, completedDate, actualDueDate: null, scheduledDays };
+      // ';' 구분 다중 날짜 (신규) 또는 단일 날짜 (구형식 하위 호환)
+      const completedDates = datesRaw ? datesRaw.split(';').filter(Boolean) : [];
+      return { isDaily: true, completedDates, actualDueDate: null, scheduledDays };
     }
-    // 구형식 하위 호환: __daily__[:YYYY-MM-DD]
-    const completedDate = dueDate.startsWith('__daily__:')
+    // 구형식: __daily__[:YYYY-MM-DD]
+    const singleDate = dueDate.startsWith('__daily__:')
       ? dueDate.slice('__daily__:'.length)
       : null;
-    return { isDaily: true, completedDate, actualDueDate: null, scheduledDays: ['매일'] };
+    return {
+      isDaily: true,
+      completedDates: singleDate ? [singleDate] : [],
+      actualDueDate: null,
+      scheduledDays: ['매일'],
+    };
   }
-  return { isDaily: false, completedDate: null, actualDueDate: dueDate, scheduledDays: [] };
+  return { isDaily: false, completedDates: [], actualDueDate: dueDate, scheduledDays: [] };
 }
 
 function rowToHomework(r: HomeworkRow): HomeworkItem {
-  const { isDaily, completedDate, actualDueDate, scheduledDays } = decodeDueDate(r.due_date);
+  const { isDaily, completedDates, actualDueDate, scheduledDays } = decodeDueDate(r.due_date);
   return {
     id: r.id,
     studentId: r.student_id as StudentId,
@@ -129,7 +144,7 @@ function rowToHomework(r: HomeworkRow): HomeworkItem {
     title: r.title,
     dueDate: actualDueDate,
     completed: r.completed,
-    completedDate,
+    completedDates,
     createdAt: r.created_at,
     isDaily,
     scheduledDays,
@@ -141,7 +156,7 @@ function homeworkToRow(h: HomeworkItem): HomeworkRow {
     student_id: h.studentId,
     subject_id: h.subjectId,
     title: h.title,
-    due_date: encodeDueDate(h.isDaily, h.completedDate, h.dueDate, h.scheduledDays),
+    due_date: encodeDueDate(h.isDaily, h.completedDates, h.dueDate, h.scheduledDays),
     completed: h.completed,
     created_at: h.createdAt,
   };
@@ -190,6 +205,8 @@ interface AppContextValue {
   addHomework: (item: HomeworkItem) => void;
   updateHomework: (id: string, updates: Partial<HomeworkItem>) => void;
   deleteHomework: (id: string) => void;
+  clearDateData: (date: string) => void;
+  removeCompletedDate: (date: string) => void;
   getStudentSubjects: (studentId: StudentId) => Subject[];
   getWeekSessions: (studentId: StudentId) => StudySession[];
   getTodaySessions: (studentId: StudentId) => StudySession[];
@@ -209,8 +226,14 @@ function getWeekStart(): Date {
   monday.setHours(0, 0, 0, 0);
   return monday;
 }
+/** 로컬 타임존 기준 YYYY-MM-DD 반환 */
 function toDateStr(date: Date): string {
-  return date.toISOString().split('T')[0];
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** ISO 문자열(UTC 포함)을 KST 로컬 날짜 YYYY-MM-DD로 변환 */
+function localDateOf(isoStr: string): string {
+  return toDateStr(new Date(isoStr));
 }
 
 // ─── 자동 정리: 이번 달 이전 데이터 삭제 ────────────────────────────────────
@@ -221,25 +244,36 @@ function getMonthStart(): string {
 }
 
 /**
- * 오래된 데이터를 자동 삭제한다.
- * - 오늘만 숙제(isDaily=false): 오늘 이전(어제 포함) 항목 삭제 → 매일 초기화
+ * 오래된 데이터를 자동 정리한다.
+ * - 오늘만 숙제(isDaily=false): 이번 달 이전 항목 삭제 (이달 누적 포인트 계산을 위해 이달 것은 보존)
  * - 학습 세션: 이번 달 이전 항목 삭제
- * - 매일 숙제(isDaily=true): 영구 보존 (반복 템플릿)
+ * - 매일 숙제(isDaily=true): 영구 보존, 단 completedDates 중 이번 달 이전 날짜 제거
  */
 async function cleanupOldData(loadedData: AppData): Promise<AppData> {
   const monthStart = getMonthStart();
-  const today = new Date().toISOString().split('T')[0];
 
-  // 오늘만 숙제: 오늘 이전에 만들어진 항목은 모두 삭제
+  // 오늘만 숙제: 이번 달 이전에 만들어진 항목 삭제
   const oldOneTimeIds = loadedData.homework
-    .filter(h => !h.isDaily && h.createdAt.split('T')[0] < today)
+    .filter(h => !h.isDaily && localDateOf(h.createdAt) < monthStart)
     .map(h => h.id);
 
   const oldSessionIds = loadedData.sessions
     .filter(s => s.date < monthStart)
     .map(s => s.id);
 
-  if (oldOneTimeIds.length === 0 && oldSessionIds.length === 0) return loadedData;
+  // 매일 숙제: completedDates에서 이번 달 이전 날짜 + 수동 지정 삭제 날짜 제거
+  const REMOVE_DATES = ['2026-05-13']; // 잘못 기록된 완료 날짜 목록
+  const dailyToUpdate: HomeworkItem[] = [];
+  const hwWithTrimmedDates = loadedData.homework.map(h => {
+    if (!h.isDaily) return h;
+    const filtered = h.completedDates.filter(
+      d => d >= monthStart && !REMOVE_DATES.includes(d)
+    );
+    if (filtered.length === h.completedDates.length) return h;
+    const trimmed = { ...h, completedDates: filtered };
+    dailyToUpdate.push(trimmed);
+    return trimmed;
+  });
 
   if (db) {
     if (oldOneTimeIds.length > 0) {
@@ -250,11 +284,17 @@ async function cleanupOldData(loadedData: AppData): Promise<AppData> {
       const { error } = await db.from('sessions').delete().in('id', oldSessionIds);
       if (error) console.warn('cleanupOldData(sessions):', error);
     }
+    // 날짜가 잘린 daily 숙제 DB 업데이트
+    for (const hw of dailyToUpdate) {
+      await db.from('homework').update({
+        due_date: encodeDueDate(hw.isDaily, hw.completedDates, hw.dueDate, hw.scheduledDays),
+      }).eq('id', hw.id);
+    }
   }
 
   return {
     ...loadedData,
-    homework: loadedData.homework.filter(h => !oldOneTimeIds.includes(h.id)),
+    homework: hwWithTrimmedDates.filter(h => !oldOneTimeIds.includes(h.id)),
     sessions: loadedData.sessions.filter(s => !oldSessionIds.includes(s.id)),
   };
 }
@@ -294,12 +334,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const fallback: AppData = { ...defaultData, ...JSON.parse(stored) };
             // localStorage 폴백에서도 오래된 데이터 정리 (DB 삭제 없이 메모리만)
             const monthStart = getMonthStart();
-            const todayStr = new Date().toISOString().split('T')[0];
             setData({
               ...fallback,
-              homework: fallback.homework.filter(
-                h => h.isDaily || h.createdAt.split('T')[0] >= todayStr
-              ),
+              homework: fallback.homework
+                .filter(h => h.isDaily || localDateOf(h.createdAt) >= monthStart)
+                .map(h => {
+                  if (!h.isDaily) return h;
+                  return { ...h, completedDates: (h.completedDates ?? []).filter(d => d >= monthStart) };
+                }),
               sessions: fallback.sessions.filter(s => s.date >= monthStart),
             });
           }
@@ -392,11 +434,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if ('completed' in updates) dbUpdates.completed  = updates.completed;
         if ('title'     in updates) dbUpdates.title       = updates.title;
         if ('subjectId' in updates) dbUpdates.subject_id  = updates.subjectId ?? null;
-        // isDaily, completedDate, dueDate, scheduledDays 중 하나라도 변경되면 due_date 재인코딩
-        if ('isDaily' in updates || 'completedDate' in updates || 'dueDate' in updates || 'scheduledDays' in updates) {
+        // isDaily, completedDates, dueDate, scheduledDays 중 하나라도 변경되면 due_date 재인코딩
+        if ('isDaily' in updates || 'completedDates' in updates || 'dueDate' in updates || 'scheduledDays' in updates) {
           dbUpdates.due_date = encodeDueDate(
             updatedItem.isDaily,
-            updatedItem.completedDate,
+            updatedItem.completedDates,
             updatedItem.dueDate,
             updatedItem.scheduledDays,
           );
@@ -416,6 +458,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           .then(({ error }) => { if (error) console.error('deleteHomework:', error); });
       }
       return next;
+    });
+  }, []);
+
+  /**
+   * 특정 날짜 데이터 삭제:
+   * - 매일 숙제: 해당 날짜를 completedDates에서 제거하고, 패널티 계산에서 제외하기 위해 해당 날짜를 완료 처리
+   * - 오늘만 숙제: 해당 날짜에 생성된 항목 삭제
+   */
+  const clearDateData = useCallback((date: string) => {
+    setData(prev => {
+      const onedayToDelete = prev.homework
+        .filter(h => !h.isDaily && localDateOf(h.createdAt) === date)
+        .map(h => h.id);
+
+      const updatedHw = prev.homework
+        .filter(h => !onedayToDelete.includes(h.id))
+        .map(h => {
+          if (!h.isDaily) return h;
+          // 해당 날짜를 completedDates에 추가(패널티 제거), 이미 있으면 유지
+          if (h.completedDates.includes(date)) return h;
+          return { ...h, completedDates: [...h.completedDates, date] };
+        });
+
+      if (db) {
+        if (onedayToDelete.length > 0) {
+          db.from('homework').delete().in('id', onedayToDelete)
+            .then(({ error }) => { if (error) console.error('clearDateData(delete):', error); });
+        }
+        for (const hw of updatedHw) {
+          if (!hw.isDaily) continue;
+          const original = prev.homework.find(h => h.id === hw.id);
+          if (!original || original.completedDates.includes(date)) continue;
+          db.from('homework').update({
+            due_date: encodeDueDate(hw.isDaily, hw.completedDates, hw.dueDate, hw.scheduledDays),
+          }).eq('id', hw.id)
+            .then(({ error }) => { if (error) console.error('clearDateData(update):', error); });
+        }
+      }
+
+      return { ...prev, homework: updatedHw };
+    });
+  }, []);
+
+  /** 특정 날짜를 모든 매일 숙제의 completedDates에서 제거 (잘못된 완료 기록 삭제용) */
+  const removeCompletedDate = useCallback((date: string) => {
+    setData(prev => {
+      const toUpdate: HomeworkItem[] = [];
+      const updated = prev.homework.map(h => {
+        if (!h.isDaily || !h.completedDates.includes(date)) return h;
+        const next = { ...h, completedDates: h.completedDates.filter(d => d !== date) };
+        toUpdate.push(next);
+        return next;
+      });
+      if (db) {
+        for (const hw of toUpdate) {
+          db.from('homework').update({
+            due_date: encodeDueDate(hw.isDaily, hw.completedDates, hw.dueDate, hw.scheduledDays),
+          }).eq('id', hw.id)
+            .then(({ error }) => { if (error) console.error('removeCompletedDate:', error); });
+        }
+      }
+      return { ...prev, homework: updated };
     });
   }, []);
 
@@ -446,7 +550,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateStudent,
       addSubject, updateSubject, deleteSubject,
       addSession, deleteSession,
-      addHomework, updateHomework, deleteHomework,
+      addHomework, updateHomework, deleteHomework, clearDateData, removeCompletedDate,
       getStudentSubjects, getWeekSessions, getTodaySessions, getStudentHomework,
       todayString, weekStartString,
     }}>

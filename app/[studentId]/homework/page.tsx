@@ -1,9 +1,97 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useApp } from '../../lib/store';
 import type { StudentId, HomeworkItem } from '../../lib/types';
+
+const PASSWORD = '2925';
+
+function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
+  const [input, setInput] = useState('');
+  const [error, setError] = useState(false);
+  const [shake, setShake] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  function handleSubmit() {
+    if (input === PASSWORD) {
+      onUnlock();
+    } else {
+      setError(true);
+      setShake(true);
+      setInput('');
+      setTimeout(() => setShake(false), 500);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+      <div
+        className="w-full rounded-3xl p-8 flex flex-col items-center"
+        style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)', maxWidth: 360 }}
+      >
+        <div
+          className="rounded-2xl flex items-center justify-center mb-5"
+          style={{ width: 64, height: 64, background: 'var(--primary-light)' }}
+        >
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="11" width="18" height="11" rx="2" stroke="var(--primary)" strokeWidth="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <h2 className="font-bold mb-1" style={{ fontSize: 20, color: 'var(--text)' }}>숙제 관리</h2>
+        <p className="mb-6 text-center" style={{ fontSize: 14, color: 'var(--text-sub)' }}>비밀번호를 입력해주세요</p>
+
+        <div
+          className="w-full rounded-2xl px-4 flex items-center mb-3"
+          style={{
+            border: `1.5px solid ${error ? 'var(--error)' : 'var(--border)'}`,
+            background: 'var(--bg)',
+            animation: shake ? 'shake 0.4s ease' : undefined,
+          }}
+        >
+          <input
+            ref={inputRef}
+            type="password"
+            value={input}
+            onChange={e => { setInput(e.target.value); setError(false); }}
+            onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
+            className="flex-1 py-4 outline-none font-bold text-center tracking-widest"
+            style={{ background: 'transparent', fontSize: 22, color: 'var(--text)', letterSpacing: 12 }}
+            placeholder="••••"
+            maxLength={10}
+          />
+        </div>
+
+        {error && (
+          <p className="mb-3 font-semibold" style={{ fontSize: 13, color: 'var(--error)' }}>
+            비밀번호가 틀렸습니다
+          </p>
+        )}
+
+        <button
+          onClick={handleSubmit}
+          className="w-full py-4 rounded-2xl font-bold mt-1"
+          style={{ background: 'var(--primary)', color: '#fff', fontSize: 16 }}
+        >
+          확인
+        </button>
+      </div>
+
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          20% { transform: translateX(-8px); }
+          40% { transform: translateX(8px); }
+          60% { transform: translateX(-6px); }
+          80% { transform: translateX(6px); }
+        }
+      `}</style>
+    </div>
+  );
+}
 
 type Tab = 'daily' | 'oneday';
 
@@ -11,7 +99,7 @@ const DAY_OPTIONS = ['매일', '월', '화', '수', '목', '금', '토', '일'] 
 const DAY_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'] as const;
 
 function toDateStr(date: Date): string {
-  return date.toISOString().split('T')[0];
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function formatScheduledDays(days: string[]): string {
@@ -30,6 +118,7 @@ export default function HomeworkPage() {
   const allHomework = getStudentHomework(studentId);
   const today = toDateStr(new Date());
 
+  const [unlocked, setUnlocked] = useState(false);
   const [tab, setTab] = useState<Tab>('daily');
   const [showAdd, setShowAdd] = useState(false);
   const [title, setTitle] = useState('');
@@ -37,16 +126,17 @@ export default function HomeworkPage() {
   const [scheduledDays, setScheduledDays] = useState<string[]>(['매일']);
 
   // 탭별 숙제 분리
+  // 오늘만 숙제: 오늘 생성된 것만 표시 (과거 날짜는 이달 포인트 계산용으로 보존, 관리 화면엔 미표시)
   const dailyItems = allHomework.filter(h => h.isDaily);
   const onedayItems = allHomework
-    .filter(h => !h.isDaily)
+    .filter(h => { if (h.isDaily) return false; const d = new Date(h.createdAt); const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; return ds === today; })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   const currentItems = tab === 'daily' ? dailyItems : onedayItems;
 
   // 완료 여부 계산 (탭 종류에 따라 다름)
   function isDone(item: HomeworkItem): boolean {
-    return item.isDaily ? item.completedDate === today : item.completed;
+    return item.isDaily ? item.completedDates.includes(today) : item.completed;
   }
 
   const pendingCount = currentItems.filter(h => !isDone(h)).length;
@@ -54,8 +144,11 @@ export default function HomeworkPage() {
 
   function toggleComplete(item: HomeworkItem) {
     if (item.isDaily) {
-      const nowDone = item.completedDate === today;
-      updateHomework(item.id, { completedDate: nowDone ? null : today });
+      const nowDone = item.completedDates.includes(today);
+      const newDates = nowDone
+        ? item.completedDates.filter(d => d !== today)
+        : [...item.completedDates, today];
+      updateHomework(item.id, { completedDates: newDates });
     } else {
       updateHomework(item.id, { completed: !item.completed });
     }
@@ -85,8 +178,8 @@ export default function HomeworkPage() {
       title: title.trim(),
       dueDate: null,
       completed: false,
-      completedDate: null,
-      createdAt: new Date().toISOString(),
+      completedDates: [],
+      createdAt: toDateStr(new Date()) + 'T00:00:00',
       isDaily: tab === 'daily',
       scheduledDays: tab === 'daily' ? scheduledDays : [],
     };
@@ -98,6 +191,8 @@ export default function HomeworkPage() {
   }
 
   const color = student?.color ?? 'var(--primary)';
+
+  if (!unlocked) return <PasswordGate onUnlock={() => setUnlocked(true)} />;
 
   function HomeworkRow({ item, i }: { item: HomeworkItem; i: number }) {
     const subj = data.subjects.find(s => s.id === item.subjectId);
@@ -194,14 +289,13 @@ export default function HomeworkPage() {
       {/* Header */}
       <div className="px-5 pt-14 pb-0" style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}>
         <button
-          onClick={() => router.push('/')}
-          className="flex items-center gap-1 mb-3"
-          style={{ color: 'var(--text-sub)', fontSize: 14 }}
+          onClick={() => router.back()}
+          className="flex items-center justify-center rounded-full mb-3 active:opacity-50 transition-opacity"
+          style={{ width: 36, height: 36, background: 'var(--bg)', color: 'var(--text-sub)' }}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M13 5L8 10l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          전체 학생
         </button>
 
         <div className="flex items-center justify-between mb-4">
@@ -210,18 +304,6 @@ export default function HomeworkPage() {
               <span style={{ fontSize: 20 }}>{student?.avatar}</span>
               <h1 className="font-bold" style={{ fontSize: 22, color: 'var(--text)' }}>숙제 관리</h1>
             </div>
-            <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>
-              미완료{' '}
-              <span style={{ fontWeight: 700, color: pendingCount > 0 ? 'var(--error)' : 'var(--text)' }}>
-                {pendingCount}개
-              </span>
-              {doneCount > 0 && (
-                <>
-                  {' '}· 완료{' '}
-                  <span style={{ fontWeight: 700, color: 'var(--success)' }}>{doneCount}개</span>
-                </>
-              )}
-            </p>
           </div>
           <button
             onClick={() => setShowAdd(true)}
