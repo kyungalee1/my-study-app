@@ -151,37 +151,37 @@ function AvatarDisplay({ photo, avatar, color, size = 64 }: { photo?: string; av
 }
 
 // ── 화이트보드 타입 & 유틸 ──────────────────────────────────
-const WB_KEY = 'whiteboard-v1';
 interface WbMessage { id: string; author: string; text: string; ts: number; }
-// date: localStorage에서 날짜 변경 감지용
-interface WbData { notice: string; replies: WbMessage[]; date?: string; }
+interface WbData { notice: string; replies: WbMessage[]; }
 interface WbRow { id: string; type: string; author: string | null; content: string; created_at: string; }
 
-function loadWbLocal(): WbData {
+// 날짜별로 다른 localStorage 키 사용
+function wbLocalKey(date: string) { return `whiteboard-v2__${date}`; }
+
+function loadWbLocal(date: string): WbData {
   try {
-    const s = localStorage.getItem(WB_KEY);
-    if (!s) return { notice: '', replies: [] };
-    const parsed = JSON.parse(s) as WbData;
-    // 저장된 날짜가 오늘과 다르면 빈 데이터 반환
-    if (parsed.date && parsed.date !== getTodayStr()) return { notice: '', replies: [] };
-    return { notice: parsed.notice ?? '', replies: parsed.replies ?? [] };
+    const s = localStorage.getItem(wbLocalKey(date));
+    return s ? JSON.parse(s) : { notice: '', replies: [] };
   } catch { return { notice: '', replies: [] }; }
 }
 
-function saveWbLocal(wb: WbData) {
-  try { localStorage.setItem(WB_KEY, JSON.stringify({ ...wb, date: getTodayStr() })); } catch {}
+function saveWbLocal(wb: WbData, date: string) {
+  try { localStorage.setItem(wbLocalKey(date), JSON.stringify(wb)); } catch {}
 }
 
-async function loadWbFromDb(): Promise<WbData> {
-  if (!db) return loadWbLocal();
-  const todayStr = getTodayStr();
+async function loadWbFromDb(targetDate: string): Promise<WbData> {
+  if (!db) return loadWbLocal(targetDate);
   try {
     const { data, error } = await db.from('whiteboard').select('*').order('created_at', { ascending: true });
-    if (error || !data) return loadWbLocal();
+    if (error || !data) return loadWbLocal(targetDate);
     const rows = data as WbRow[];
-    // 오늘 날짜(로컬 기준)에 작성된 것만 표시
-    const noticeRow = rows.find(r => r.type === 'notice' && toLocalStr(new Date(r.created_at)) === todayStr);
-    const replyRows = rows.filter(r => r.type === 'reply' && toLocalStr(new Date(r.created_at)) === todayStr);
+    // 공지: created_at 날짜 기준 조회 (댓글과 동일한 방식)
+    // 구형 id='notice' 와 신형 id='notice__YYYY-MM-DD' 모두 지원
+    const noticeRow = rows.find(r =>
+      r.type === 'notice' && toLocalStr(new Date(r.created_at)) === targetDate
+    );
+    // 답변: created_at 날짜(로컬 기준)가 targetDate인 것만
+    const replyRows = rows.filter(r => r.type === 'reply' && toLocalStr(new Date(r.created_at)) === targetDate);
     const wb: WbData = {
       notice: noticeRow?.content ?? '',
       replies: replyRows.map(r => ({
@@ -191,16 +191,16 @@ async function loadWbFromDb(): Promise<WbData> {
         ts: new Date(r.created_at).getTime(),
       })),
     };
-    saveWbLocal(wb);
+    saveWbLocal(wb, targetDate);
     return wb;
-  } catch { return loadWbLocal(); }
+  } catch { return loadWbLocal(targetDate); }
 }
 
-async function saveNoticeToDb(notice: string): Promise<void> {
+async function saveNoticeToDb(notice: string, date: string): Promise<void> {
   if (!db) return;
-  // created_at을 현재 시각으로 명시해야 날짜 필터링이 정확하게 동작함
+  // id에 날짜를 포함시켜 날짜별 공지가 독립적으로 저장됨
   const { error } = await db.from('whiteboard').upsert({
-    id: 'notice',
+    id: `notice__${date}`,
     type: 'notice',
     author: null,
     content: notice,
@@ -237,23 +237,6 @@ function HomeContent() {
   const [editPhoto, setEditPhoto] = useState<string | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 화이트보드
-  const [wb, setWb] = useState<WbData>({ notice: '', replies: [] });
-  const [wbEdit, setWbEdit] = useState(false);
-  const [wbDraft, setWbDraft] = useState('');
-  const [replyOpen, setReplyOpen] = useState(false);
-  const [replyAuthor, setReplyAuthor] = useState('');
-  const [replyText, setReplyText] = useState('');
-
-  useEffect(() => {
-    loadWbFromDb().then(setWb);
-    // 30초마다 새로고침해서 다른 사람이 쓴 공지/답변을 자동으로 반영
-    const timer = setInterval(() => {
-      loadWbFromDb().then(setWb);
-    }, 30_000);
-    return () => clearInterval(timer);
-  }, []);
-
   const todayStr = getTodayStr();
   const searchParams = useSearchParams();
   const initialDate = (() => {
@@ -262,6 +245,24 @@ function HomeContent() {
     return todayStr;
   })();
   const [viewDate, setViewDate] = useState(initialDate);
+
+  // 화이트보드
+  const [wb, setWb] = useState<WbData>({ notice: '', replies: [] });
+  const [wbEdit, setWbEdit] = useState(false);
+  const [wbDraft, setWbDraft] = useState('');
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyAuthor, setReplyAuthor] = useState('');
+  const [replyText, setReplyText] = useState('');
+
+  // viewDate가 바뀔 때마다 해당 날짜의 공지/답변을 로드
+  useEffect(() => {
+    loadWbFromDb(viewDate).then(setWb);
+    setWbEdit(false);
+    const timer = setInterval(() => {
+      loadWbFromDb(viewDate).then(setWb);
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [viewDate]);
 
   function prevDay() {
     const d = new Date(viewDate + 'T12:00:00');
@@ -435,9 +436,9 @@ function HomeContent() {
                     const trimmed = wbDraft.trim();
                     const next = { ...wb, notice: trimmed };
                     setWb(next);
-                    saveWbLocal(next);
+                    saveWbLocal(next, viewDate);
                     setWbEdit(false);
-                    await saveNoticeToDb(trimmed);
+                    await saveNoticeToDb(trimmed, viewDate);
                   }}
                   className="rounded-xl px-3 py-1.5 font-semibold"
                   style={{ fontSize: 12, background: '#F59E0B', color: '#fff' }}
@@ -465,7 +466,7 @@ function HomeContent() {
                     onClick={async () => {
                       const next = { ...wb, replies: wb.replies.filter(x => x.id !== r.id) };
                       setWb(next);
-                      saveWbLocal(next);
+                      saveWbLocal(next, viewDate);
                       await deleteReplyFromDb(r.id);
                     }}
                     style={{ fontSize: 16, color: 'var(--text-sub)', flexShrink: 0, lineHeight: 1 }}
@@ -516,7 +517,7 @@ function HomeContent() {
                     const msg: WbMessage = { id: Date.now().toString(), author: replyAuthor, text: replyText.trim(), ts: Date.now() };
                     const next = { ...wb, replies: [...wb.replies, msg] };
                     setWb(next);
-                    saveWbLocal(next);
+                    saveWbLocal(next, viewDate);
                     setReplyOpen(false); setReplyText(''); setReplyAuthor('');
                     await addReplyToDb(msg);
                   }}
