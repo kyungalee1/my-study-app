@@ -52,19 +52,41 @@ CREATE TABLE IF NOT EXISTS homework (
   created_at text    NOT NULL   -- ISO 8601 문자열 (정렬용)
 );
 
+-- 숙제 감정 이모지 테이블
+-- id: '{hwId}__{YYYY-MM-DD}' 형식의 고유 키
+CREATE TABLE IF NOT EXISTS emotions (
+  id    text PRIMARY KEY,   -- '{hwId}__{date}'
+  emoji text NOT NULL
+);
+
+ALTER TABLE emotions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow_all_emotions" ON emotions FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- 화이트보드(공지사항 + 답변) 테이블
+-- type: 'notice' (공지, id='notice' 고정) | 'reply' (답변, id=타임스탬프)
+CREATE TABLE IF NOT EXISTS whiteboard (
+  id         text PRIMARY KEY,
+  type       text NOT NULL,           -- 'notice' | 'reply'
+  author     text,                    -- 공지: null, 답변: 작성자 이름
+  content    text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- =====================================================
 -- Row Level Security (RLS)
 -- 이 앱은 인증 없이 사용하는 가족 전용 앱이므로
 -- anon 키로 읽기/쓰기 모두 허용합니다.
 -- =====================================================
 
-ALTER TABLE students ENABLE ROW LEVEL SECURITY;
-ALTER TABLE subjects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE homework  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE students   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subjects   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE homework   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whiteboard ENABLE ROW LEVEL SECURITY;
 
 -- 각 테이블에 anon 전체 허용 정책 추가
-CREATE POLICY "allow_all_students" ON students FOR ALL TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_subjects" ON subjects FOR ALL TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_sessions" ON sessions FOR ALL TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_homework" ON homework  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_students"   ON students   FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_subjects"   ON subjects   FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_sessions"   ON sessions   FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_homework"   ON homework   FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_whiteboard" ON whiteboard FOR ALL TO anon USING (true) WITH CHECK (true);

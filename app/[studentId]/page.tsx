@@ -2,6 +2,7 @@
 
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useApp } from '../lib/store';
+import { db } from '../lib/supabase';
 import type { StudentId } from '../lib/types';
 import { useState, useEffect, Suspense } from 'react';
 
@@ -20,11 +21,27 @@ function toLocalStr(d: Date): string {
 }
 
 const EMOTIONS_STORAGE_KEY = 'hw-emotions';
-function loadEmotions(): Record<string, string> {
+function loadEmotionsLocal(): Record<string, string> {
   try { const s = localStorage.getItem(EMOTIONS_STORAGE_KEY); return s ? JSON.parse(s) : {}; } catch { return {}; }
 }
-function saveEmotions(map: Record<string, string>) {
+function saveEmotionsLocal(map: Record<string, string>) {
   try { localStorage.setItem(EMOTIONS_STORAGE_KEY, JSON.stringify(map)); } catch {}
+}
+async function loadEmotionsFromDb(): Promise<Record<string, string>> {
+  if (!db) return loadEmotionsLocal();
+  try {
+    const { data, error } = await db.from('emotions').select('id, emoji');
+    if (error || !data) return loadEmotionsLocal();
+    const map: Record<string, string> = {};
+    for (const row of data as { id: string; emoji: string }[]) map[row.id] = row.emoji;
+    saveEmotionsLocal(map);
+    return map;
+  } catch { return loadEmotionsLocal(); }
+}
+async function upsertEmotionToDb(id: string, emoji: string): Promise<void> {
+  if (!db) return;
+  const { error } = await db.from('emotions').upsert({ id, emoji });
+  if (error) console.error('upsertEmotionToDb:', error);
 }
 
 function DashboardContent() {
@@ -38,7 +55,13 @@ function DashboardContent() {
   // 감정 패널이 열려 있는 항목 id
   const [openEmotion, setOpenEmotion] = useState<string | null>(null);
 
-  useEffect(() => { setEmotions(loadEmotions()); }, []);
+  useEffect(() => {
+    loadEmotionsFromDb().then(setEmotions);
+    const timer = setInterval(() => {
+      loadEmotionsFromDb().then(setEmotions);
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const student = data.students.find(s => s.id === studentId);
   const homework = getStudentHomework(studentId);
@@ -84,8 +107,9 @@ function DashboardContent() {
     const key = emotionKey(hwId);
     const next = { ...emotions, [key]: emoji };
     setEmotions(next);
-    saveEmotions(next);
+    saveEmotionsLocal(next);
     setOpenEmotion(null);
+    upsertEmotionToDb(key, emoji);
   }
 
   return (
