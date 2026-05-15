@@ -405,17 +405,23 @@ function HomeContent() {
             <div className="flex items-center gap-1.5">
               <span style={{ fontSize: 14 }}>📌</span>
               <span className="font-bold" style={{ fontSize: 12, color: '#92400E' }}>우리가족 공지사항</span>
+              {!isToday && (
+                <span className="rounded-full px-1.5 py-0.5 font-semibold" style={{ fontSize: 9, background: '#FEF3C7', color: '#D97706' }}>과거 기록</span>
+              )}
             </div>
-            <button
-              onClick={() => { setWbDraft(wb.notice); setWbEdit(true); }}
-              style={{ fontSize: 11, color: '#D97706', fontWeight: 600 }}
-            >
-              {wb.notice ? '수정' : '작성'}
-            </button>
+            {/* 오늘만 작성/수정 가능 */}
+            {isToday && (
+              <button
+                onClick={() => { setWbDraft(wb.notice); setWbEdit(true); }}
+                style={{ fontSize: 11, color: '#D97706', fontWeight: 600 }}
+              >
+                {wb.notice ? '수정' : '작성'}
+              </button>
+            )}
           </div>
 
           {/* 공지 내용 */}
-          {wbEdit ? (
+          {wbEdit && isToday ? (
             <div className="px-4 py-3">
               <textarea
                 value={wbDraft}
@@ -450,7 +456,9 @@ function HomeContent() {
               {wb.notice ? (
                 <p style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{wb.notice}</p>
               ) : (
-                <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>아직 공지가 없어요</p>
+                <p style={{ fontSize: 13, color: 'var(--text-sub)' }}>
+                  {isToday ? '아직 공지가 없어요' : '이 날 공지가 없어요'}
+                </p>
               )}
             </div>
           )}
@@ -462,78 +470,83 @@ function HomeContent() {
                 <div key={r.id} className="flex items-start gap-2 px-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', flexShrink: 0, marginTop: 1 }}>{r.author}</span>
                   <p style={{ fontSize: 12, color: 'var(--text)', flex: 1, lineHeight: 1.5 }}>{r.text}</p>
-                  <button
-                    onClick={async () => {
-                      const next = { ...wb, replies: wb.replies.filter(x => x.id !== r.id) };
-                      setWb(next);
-                      saveWbLocal(next, viewDate);
-                      await deleteReplyFromDb(r.id);
-                    }}
-                    style={{ fontSize: 16, color: 'var(--text-sub)', flexShrink: 0, lineHeight: 1 }}
-                  >×</button>
+                  {/* 오늘만 삭제 가능 */}
+                  {isToday && (
+                    <button
+                      onClick={async () => {
+                        const next = { ...wb, replies: wb.replies.filter(x => x.id !== r.id) };
+                        setWb(next);
+                        saveWbLocal(next, viewDate);
+                        await deleteReplyFromDb(r.id);
+                      }}
+                      style={{ fontSize: 16, color: 'var(--text-sub)', flexShrink: 0, lineHeight: 1 }}
+                    >×</button>
+                  )}
                 </div>
               ))}
             </div>
           )}
 
-          {/* 답변 달기 */}
-          {replyOpen ? (
-            <div className="px-4 py-3" style={{ borderTop: '1px solid var(--border)' }}>
-              <div className="flex flex-wrap gap-2 mb-2">
-                {[
-                  ...data.students.map(s => ({ name: s.name, color: s.color })),
-                  { name: '엄마', color: '#F472B6' },
-                  { name: '아빠', color: '#60A5FA' },
-                ].map(({ name, color }) => (
+          {/* 답변 달기 — 오늘만 표시 */}
+          {isToday && (
+            replyOpen ? (
+              <div className="px-4 py-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {[
+                    ...data.students.map(s => ({ name: s.name, color: s.color })),
+                    { name: '엄마', color: '#F472B6' },
+                    { name: '아빠', color: '#60A5FA' },
+                  ].map(({ name, color }) => (
+                    <button
+                      key={name}
+                      onClick={() => setReplyAuthor(name)}
+                      className="rounded-full px-3 py-1 font-semibold"
+                      style={{
+                        fontSize: 11,
+                        background: replyAuthor === name ? color : 'var(--bg)',
+                        color: replyAuthor === name ? '#fff' : 'var(--text-sub)',
+                        border: `1.5px solid ${replyAuthor === name ? color : 'var(--border)'}`,
+                      }}
+                    >{name}</button>
+                  ))}
+                </div>
+                <input
+                  value={replyText}
+                  onChange={e => setReplyText(e.target.value)}
+                  placeholder="답변을 입력해요"
+                  className="w-full outline-none rounded-xl px-3 py-2"
+                  style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}
+                />
+                <div className="flex gap-2 mt-2">
                   <button
-                    key={name}
-                    onClick={() => setReplyAuthor(name)}
-                    className="rounded-full px-3 py-1 font-semibold"
-                    style={{
-                      fontSize: 11,
-                      background: replyAuthor === name ? color : 'var(--bg)',
-                      color: replyAuthor === name ? '#fff' : 'var(--text-sub)',
-                      border: `1.5px solid ${replyAuthor === name ? color : 'var(--border)'}`,
+                    onClick={() => { setReplyOpen(false); setReplyText(''); setReplyAuthor(''); }}
+                    className="rounded-xl px-3 py-1.5 font-semibold"
+                    style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text-sub)' }}
+                  >취소</button>
+                  <button
+                    onClick={async () => {
+                      if (!replyText.trim() || !replyAuthor) return;
+                      const msg: WbMessage = { id: Date.now().toString(), author: replyAuthor, text: replyText.trim(), ts: Date.now() };
+                      const next = { ...wb, replies: [...wb.replies, msg] };
+                      setWb(next);
+                      saveWbLocal(next, viewDate);
+                      setReplyOpen(false); setReplyText(''); setReplyAuthor('');
+                      await addReplyToDb(msg);
                     }}
-                  >{name}</button>
-                ))}
+                    className="rounded-xl px-3 py-1.5 font-semibold"
+                    style={{ fontSize: 12, background: 'var(--primary)', color: '#fff' }}
+                  >남기기</button>
+                </div>
               </div>
-              <input
-                value={replyText}
-                onChange={e => setReplyText(e.target.value)}
-                placeholder="답변을 입력해요"
-                className="w-full outline-none rounded-xl px-3 py-2"
-                style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}
-              />
-              <div className="flex gap-2 mt-2">
-                <button
-                  onClick={() => { setReplyOpen(false); setReplyText(''); setReplyAuthor(''); }}
-                  className="rounded-xl px-3 py-1.5 font-semibold"
-                  style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text-sub)' }}
-                >취소</button>
-                <button
-                  onClick={async () => {
-                    if (!replyText.trim() || !replyAuthor) return;
-                    const msg: WbMessage = { id: Date.now().toString(), author: replyAuthor, text: replyText.trim(), ts: Date.now() };
-                    const next = { ...wb, replies: [...wb.replies, msg] };
-                    setWb(next);
-                    saveWbLocal(next, viewDate);
-                    setReplyOpen(false); setReplyText(''); setReplyAuthor('');
-                    await addReplyToDb(msg);
-                  }}
-                  className="rounded-xl px-3 py-1.5 font-semibold"
-                  style={{ fontSize: 12, background: 'var(--primary)', color: '#fff' }}
-                >남기기</button>
-              </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => setReplyOpen(true)}
-              className="w-full py-2.5 text-center"
-              style={{ fontSize: 12, color: 'var(--text-sub)', borderTop: '1px solid var(--border)' }}
-            >
-              💬 답변 남기기
-            </button>
+            ) : (
+              <button
+                onClick={() => setReplyOpen(true)}
+                className="w-full py-2.5 text-center"
+                style={{ fontSize: 12, color: 'var(--text-sub)', borderTop: '1px solid var(--border)' }}
+              >
+                💬 답변 남기기
+              </button>
+            )
           )}
         </div>
       </div>
