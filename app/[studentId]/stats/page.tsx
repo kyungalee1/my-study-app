@@ -2,7 +2,11 @@
 
 import { useState } from 'react';
 import { useApp } from '../../lib/store';
-import type { HomeworkItem, Student, StudentId } from '../../lib/types';
+import { isBeforeServiceStart, isLaunchDailyCompleteDay } from '../../lib/serviceConfig';
+import type { HomeworkHistoryRecord, HomeworkItem, Student, StudentId } from '../../lib/types';
+import { getHomeworkStateForDate } from '../../lib/homeworkHistory';
+import { isDailyHomeworkExempt } from '../../lib/exemptDates';
+import type { ExemptDate } from '../../lib/types';
 
 type Period = 'week' | 'month';
 
@@ -47,8 +51,6 @@ function getMonthLabel(): string {
 
 const WEEK_DAY_LABELS = ['월', '화', '수', '목', '금', '토', '일'];
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
-const SKIP_DATES = new Set(['2026-05-13']);
-
 // ── 타입 & 계산 ─────────────────────────────────────────────
 type HwDot = { id: string; title: string; done: boolean };
 type DayStat = { completed: number; pending: number; items: HwDot[] };
@@ -56,36 +58,25 @@ type DayStat = { completed: number; pending: number; items: HwDot[] };
 function calcStats(
   studentId: StudentId,
   homework: HomeworkItem[],
-  periodDates: string[]
+  history: HomeworkHistoryRecord[],
+  exemptDates: ExemptDate[],
+  students: Student[],
+  periodDates: string[],
 ): Record<string, DayStat> {
   const today = toLocalDateStr(new Date());
   const byDate: Record<string, DayStat> = {};
   for (const d of periodDates) byDate[d] = { completed: 0, pending: 0, items: [] };
 
-  const myHw = homework.filter(h => h.studentId === studentId);
-
   for (const date of periodDates) {
-    if (date > today || SKIP_DATES.has(date)) continue;
+    if (date > today || isBeforeServiceStart(date)) continue;
+    if (isDailyHomeworkExempt(date, exemptDates) && !isLaunchDailyCompleteDay(studentId, date)) {
+      continue;
+    }
 
-    for (const hw of myHw) {
-      const _cd = new Date(hw.createdAt);
-      const created = `${_cd.getFullYear()}-${String(_cd.getMonth()+1).padStart(2,'0')}-${String(_cd.getDate()).padStart(2,'0')}`;
-
-      if (hw.isDaily) {
-        if (created > date) continue;
-        const dayLabel = DAY_LABELS[new Date(date + 'T12:00:00').getDay()];
-        const scheduled =
-          hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')
-            ? true : hw.scheduledDays.includes(dayLabel);
-        if (!scheduled) continue;
-        const done = hw.completedDates.includes(date);
-        byDate[date].items.push({ id: hw.id, title: hw.title, done });
-        done ? byDate[date].completed++ : byDate[date].pending++;
-      } else {
-        if (created !== date) continue;
-        byDate[date].items.push({ id: hw.id, title: hw.title, done: hw.completed });
-        hw.completed ? byDate[date].completed++ : byDate[date].pending++;
-      }
+    const dayState = getHomeworkStateForDate(studentId, homework, history, date, today, students);
+    for (const s of dayState) {
+      byDate[date].items.push({ id: s.id, title: s.title, done: s.done });
+      s.done ? byDate[date].completed++ : byDate[date].pending++;
     }
   }
   return byDate;
@@ -294,16 +285,20 @@ export default function StatsPage() {
 
   const students = data.students;
   const homework = data.homework;
+  const homeworkHistory = data.homeworkHistory ?? [];
+  const exemptDates = data.exemptDates ?? [];
   const today = toLocalDateStr(new Date());
 
   const allStats = Object.fromEntries(
-    students.map(s => [s.id, calcStats(s.id, homework, periodDates)])
+    students.map(s => [s.id, calcStats(s.id, homework, homeworkHistory, exemptDates, students, periodDates)])
   ) as Record<StudentId, Record<string, DayStat>>;
 
   // 학생별 요약 수치
   const summaries = students.map(s => {
     const byDate = allStats[s.id] ?? {};
-    const activeDates = periodDates.filter(d => d <= today && !SKIP_DATES.has(d) && (byDate[d]?.items.length ?? 0) > 0);
+    const activeDates = periodDates.filter(
+      d => d <= today && !isDailyHomeworkExempt(d, exemptDates) && (byDate[d]?.items.length ?? 0) > 0,
+    );
     const completedDays = activeDates.filter(d => byDate[d].pending === 0).length;
     const activeDays = activeDates.length;
     return { student: s, completedDays, activeDays };

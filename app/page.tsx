@@ -2,22 +2,16 @@
 
 import { useRef, useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { AppProvider, useApp } from './lib/store';
+import { useApp } from './lib/store';
 import { db } from './lib/supabase';
-import type { HomeworkItem, StudentId } from './lib/types';
-
-const POINT_DAILY = 500;    // 매일 숙제: 전체 완료일 +500 / 지난 미완료일 -500
-const POINT_ONEDAY = 300;   // 오늘만 숙제: 해당 날 전부 완료 시 +300
+import type { StudentId } from './lib/types';
+import { isLaunchDailyCompleteDay, SERVICE_START_DATE } from './lib/serviceConfig';
+import { isDailyHomeworkExempt } from './lib/exemptDates';
+import { calcPoints } from './lib/pointsCalc';
+import type { ExemptDate } from './lib/types';
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
 
-interface PointsDisplay {
-  todayDaily: number;   // 오늘 매일 숙제 결과 (0 or +500)
-  todayOneday: number;  // 오늘만 숙제 결과 (0 or +300)
-  monthlyTotal: number; // 이달 누적 합계 (과거 확정 + 오늘 현재 상태)
-}
-
-// 계산에서 제외할 날짜
-const SKIP_DATES = new Set(['2026-05-13']);
+const PARENT_PASSWORD = '2925';
 
 function toLocalStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -30,79 +24,6 @@ function getTodayStr(): string {
 /** ISO 문자열(UTC 포함)을 KST 로컬 날짜 YYYY-MM-DD로 변환 */
 function localDateOf(isoStr: string): string {
   return toLocalStr(new Date(isoStr));
-}
-
-/** viewDate 기준으로 포인트 계산. todayStr은 실제 오늘(패널티 기준용) */
-function calcPoints(studentId: StudentId, homework: HomeworkItem[], viewDate: string, todayStr: string): PointsDisplay {
-  const viewDay = DAY_LABELS[new Date(viewDate + 'T12:00:00').getDay()];
-  const monthStart = viewDate.slice(0, 7) + '-01';
-
-  const dailyHw = homework.filter(h => h.isDaily && h.studentId === studentId);
-
-  // ── 선택일 매일 숙제 결과 ─────────────────────────────────────────────────
-  const viewActiveDailyHw = dailyHw.filter(hw => {
-      if (localDateOf(hw.createdAt) > viewDate) return false;
-    if (hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')) return true;
-    return hw.scheduledDays.includes(viewDay);
-  });
-  const todayDaily =
-    viewActiveDailyHw.length > 0 && viewActiveDailyHw.every(hw => hw.completedDates.includes(viewDate))
-      ? POINT_DAILY : 0;
-
-  // ── 선택일 오늘만 숙제 결과 ───────────────────────────────────────────────
-  const viewOnedayHw = homework.filter(
-    h => !h.isDaily && h.studentId === studentId && localDateOf(h.createdAt) === viewDate
-  );
-  const todayOneday =
-    viewOnedayHw.length > 0 && viewOnedayHw.every(hw => hw.completed)
-      ? POINT_ONEDAY : 0;
-
-  // ── 이달 누적 합계 (monthStart ~ viewDate) ────────────────────────────────
-  let monthlyTotal = 0;
-
-  if (dailyHw.length > 0) {
-    for (let d = new Date(monthStart + 'T12:00:00'); ; d.setDate(d.getDate() + 1)) {
-      const dateStr = toLocalStr(d);
-      if (dateStr > viewDate) break;
-      if (SKIP_DATES.has(dateStr)) continue;
-
-      const dayLabel = DAY_LABELS[d.getDay()];
-      const active = dailyHw.filter(hw => {
-        if (localDateOf(hw.createdAt) > dateStr) return false;
-        if (hw.scheduledDays.length === 0 || hw.scheduledDays.includes('매일')) return true;
-        return hw.scheduledDays.includes(dayLabel);
-      });
-      if (active.length === 0) continue;
-
-      const allDone = active.every(hw => hw.completedDates.includes(dateStr));
-      if (allDone) {
-        monthlyTotal += POINT_DAILY;
-      } else if (dateStr < todayStr || (dateStr === viewDate && viewDate < todayStr)) {
-        // 과거 날짜 미완료 → 패널티 (선택일이 오늘이면 패널티 없음)
-        monthlyTotal -= POINT_DAILY;
-      }
-    }
-  }
-
-  // 오늘만 숙제 누적 (monthStart ~ viewDate)
-  const onedayHw = homework.filter(
-    h => !h.isDaily && h.studentId === studentId &&
-      localDateOf(h.createdAt) >= monthStart &&
-      localDateOf(h.createdAt) <= viewDate
-  );
-  const onedayByDate = new Map<string, HomeworkItem[]>();
-  for (const hw of onedayHw) {
-    const dateKey = localDateOf(hw.createdAt);
-    if (!onedayByDate.has(dateKey)) onedayByDate.set(dateKey, []);
-    onedayByDate.get(dateKey)!.push(hw);
-  }
-  for (const [, items] of onedayByDate) {
-    if (items.length > 0 && items.every(hw => hw.completed)) {
-      monthlyTotal += POINT_ONEDAY;
-    }
-  }
-
-  return { todayDaily, todayOneday, monthlyTotal };
 }
 
 function formatPoints(pts: number): string {
@@ -227,8 +148,10 @@ async function deleteReplyFromDb(id: string): Promise<void> {
 }
 
 function HomeContent() {
-  const { data, updateStudent, loading } = useApp();
+  const { data, updateStudent, loading, addExemptDate, removeExemptDate } = useApp();
   const homework = data.homework;
+  const homeworkHistory = data.homeworkHistory ?? [];
+  const exemptDates = data.exemptDates ?? [];
   const router = useRouter();
 
   const [editingId, setEditingId] = useState<StudentId | null>(null);
@@ -241,7 +164,7 @@ function HomeContent() {
   const searchParams = useSearchParams();
   const initialDate = (() => {
     const p = searchParams.get('date');
-    if (p && p >= todayStr.slice(0, 7) + '-01' && p <= todayStr) return p;
+    if (p && p >= SERVICE_START_DATE && p <= todayStr) return p;
     return todayStr;
   })();
   const [viewDate, setViewDate] = useState(initialDate);
@@ -250,6 +173,31 @@ function HomeContent() {
   const [wb, setWb] = useState<WbData>({ notice: '', replies: [] });
   const [wbEdit, setWbEdit] = useState(false);
   const [wbDraft, setWbDraft] = useState('');
+  const [exemptOpen, setExemptOpen] = useState(false);
+  const [exemptUnlocked, setExemptUnlocked] = useState(false);
+  const [exemptPw, setExemptPw] = useState('');
+  const [exemptLabelDraft, setExemptLabelDraft] = useState('여행');
+  const viewExempt = isDailyHomeworkExempt(viewDate, exemptDates);
+
+  const EXEMPT_UI_KEY = 'study-app-exempt-ui';
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(EXEMPT_UI_KEY);
+      if (!raw) return;
+      const { open, unlocked } = JSON.parse(raw) as { open?: boolean; unlocked?: boolean };
+      if (open) setExemptOpen(true);
+      if (unlocked) setExemptUnlocked(true);
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        EXEMPT_UI_KEY,
+        JSON.stringify({ open: exemptOpen, unlocked: exemptUnlocked }),
+      );
+    } catch { /* ignore */ }
+  }, [exemptOpen, exemptUnlocked]);
+
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyAuthor, setReplyAuthor] = useState('');
   const [replyText, setReplyText] = useState('');
@@ -269,7 +217,7 @@ function HomeContent() {
     d.setDate(d.getDate() - 1);
     const prev = toLocalStr(d);
     // 이번 달 1일 이전으로는 이동 불가
-    if (prev >= viewDate.slice(0, 7) + '-01') setViewDate(prev);
+    if (prev >= SERVICE_START_DATE) setViewDate(prev);
   }
 
   function nextDay() {
@@ -382,6 +330,14 @@ function HomeContent() {
                 오늘로 ↩
               </button>
             )}
+            {viewExempt && (
+              <span
+                className="rounded-full px-2.5 py-0.5 font-semibold"
+                style={{ fontSize: 11, background: '#E0F2FE', color: '#0369A1' }}
+              >
+                🏖️ 매일 숙제 면제
+              </span>
+            )}
           </div>
 
           <button
@@ -395,6 +351,96 @@ function HomeContent() {
             </svg>
           </button>
         </div>
+
+        <button
+          onClick={() => setExemptOpen(v => !v)}
+          className="mt-3 w-full rounded-xl py-2 font-semibold"
+          style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text-sub)' }}
+        >
+          {exemptOpen ? '▲ 면제일 관리 닫기' : '🏖️ 매일 숙제 면제일 관리'}
+        </button>
+
+        {exemptOpen && (
+          <div
+            className="mt-2 rounded-2xl p-3"
+            style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+          >
+            {!exemptUnlocked ? (
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={exemptPw}
+                  onChange={e => setExemptPw(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && exemptPw === PARENT_PASSWORD) setExemptUnlocked(true);
+                  }}
+                  placeholder="비밀번호"
+                  className="flex-1 rounded-xl px-3 py-2 outline-none"
+                  style={{ fontSize: 13, background: 'var(--surface)', border: '1px solid var(--border)' }}
+                />
+                <button
+                  onClick={() => { if (exemptPw === PARENT_PASSWORD) setExemptUnlocked(true); }}
+                  className="rounded-xl px-3 py-2 font-bold"
+                  style={{ fontSize: 12, background: 'var(--primary)', color: '#fff' }}
+                >
+                  확인
+                </button>
+              </div>
+            ) : (
+              <>
+                <p style={{ fontSize: 11, color: 'var(--text-sub)', marginBottom: 8, lineHeight: 1.5 }}>
+                  여행·소풍 등 매일 숙제를 하지 않는 날입니다. -500원·+500원 모두 적용되지 않아요.
+                </p>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    value={exemptLabelDraft}
+                    onChange={e => setExemptLabelDraft(e.target.value)}
+                    placeholder="사유 (여행, 소풍…)"
+                    className="flex-1 rounded-xl px-3 py-2 outline-none"
+                    style={{ fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)' }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (viewExempt) removeExemptDate(viewDate);
+                      else addExemptDate({ date: viewDate, label: exemptLabelDraft.trim() || '면제' });
+                    }}
+                    className="rounded-xl px-3 py-2 font-bold whitespace-nowrap"
+                    style={{
+                      fontSize: 12,
+                      background: viewExempt ? 'var(--error)' : '#0369A1',
+                      color: '#fff',
+                    }}
+                  >
+                    {formatViewDate(viewDate)} {viewExempt ? '해제' : '면제'}
+                  </button>
+                </div>
+                {exemptDates.length === 0 ? (
+                  <p style={{ fontSize: 12, color: 'var(--text-sub)' }}>등록된 면제일이 없어요</p>
+                ) : (
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {exemptDates.map(e => (
+                      <div
+                        key={e.date}
+                        className="flex items-center justify-between rounded-xl px-3 py-2"
+                        style={{ background: 'var(--surface)' }}
+                      >
+                        <span style={{ fontSize: 12, color: 'var(--text)' }}>
+                          {e.date.slice(5).replace('-', '/')} · {e.label}
+                        </span>
+                        <button
+                          onClick={() => removeExemptDate(e.date)}
+                          style={{ fontSize: 11, color: 'var(--text-sub)' }}
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 화이트보드 */}
@@ -554,9 +600,11 @@ function HomeContent() {
       {/* Student Cards */}
       <div className="px-4 py-4 space-y-3">
         {data.students.map((student, i) => {
-          const pts = calcPoints(student.id, homework, viewDate, todayStr);
+          const pts = calcPoints(student.id, homework, homeworkHistory, exemptDates, data.students, viewDate, todayStr);
           const totalColor = pts.monthlyTotal > 0 ? 'var(--success)' : pts.monthlyTotal < 0 ? 'var(--error)' : 'var(--text-sub)';
-          const dailyColor = pts.todayDaily > 0 ? 'var(--success)' : 'var(--text-sub)';
+          const dailyLaunch = isLaunchDailyCompleteDay(student.id, viewDate);
+          const dailyExempt = !dailyLaunch && isDailyHomeworkExempt(viewDate, exemptDates);
+          const dailyColor = dailyExempt ? '#0369A1' : pts.todayDaily > 0 ? 'var(--success)' : 'var(--text-sub)';
           const onedayColor = pts.todayOneday > 0 ? 'var(--success)' : 'var(--text-sub)';
 
           return (
@@ -605,7 +653,7 @@ function HomeContent() {
                     📅 매일 숙제
                   </div>
                   <div className="font-bold" style={{ fontSize: 16, color: dailyColor }}>
-                    {formatPointsShort(pts.todayDaily)}
+                    {dailyExempt ? '면제' : formatPointsShort(pts.todayDaily)}
                   </div>
                 </div>
                 <div style={{ width: 1, background: 'var(--border)' }} />
@@ -766,10 +814,8 @@ function HomeContent() {
 
 export default function Home() {
   return (
-    <AppProvider>
-      <Suspense>
-        <HomeContent />
-      </Suspense>
-    </AppProvider>
+    <Suspense>
+      <HomeContent />
+    </Suspense>
   );
 }

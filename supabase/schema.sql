@@ -52,6 +52,28 @@ CREATE TABLE IF NOT EXISTS homework (
   created_at text    NOT NULL   -- ISO 8601 문자열 (정렬용)
 );
 
+-- 매일 숙제 면제일 (여행·소풍 등 — -500/+500 포인트 제외)
+CREATE TABLE IF NOT EXISTS exempt_dates (
+  date       text PRIMARY KEY,
+  label      text NOT NULL DEFAULT '',
+  created_at text NOT NULL
+);
+
+-- 숙제 과거 기록 (삭제·수정 시에도 보존되는 스냅샷)
+CREATE TABLE IF NOT EXISTS homework_history (
+  id                  text PRIMARY KEY,
+  homework_id         text NOT NULL,
+  student_id          text NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  subject_id          text,
+  title               text NOT NULL,
+  date                text NOT NULL,
+  is_daily            boolean NOT NULL DEFAULT true,
+  completed           boolean NOT NULL DEFAULT false,
+  scheduled_days      text NOT NULL DEFAULT '매일',
+  homework_created_at text NOT NULL,
+  archived_at         text NOT NULL
+);
+
 -- 숙제 감정 이모지 테이블
 -- id: '{hwId}__{YYYY-MM-DD}' 형식의 고유 키
 CREATE TABLE IF NOT EXISTS emotions (
@@ -81,12 +103,16 @@ CREATE TABLE IF NOT EXISTS whiteboard (
 ALTER TABLE students   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subjects   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE homework   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE homework         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE homework_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exempt_dates         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whiteboard ENABLE ROW LEVEL SECURITY;
 
 -- 각 테이블에 anon 전체 허용 정책 추가
 CREATE POLICY "allow_all_students"   ON students   FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "allow_all_subjects"   ON subjects   FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "allow_all_sessions"   ON sessions   FOR ALL TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_homework"   ON homework   FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_homework"         ON homework         FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_homework_history" ON homework_history FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_exempt_dates"     ON exempt_dates     FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "allow_all_whiteboard" ON whiteboard FOR ALL TO anon USING (true) WITH CHECK (true);

@@ -1,7 +1,7 @@
 'use client';
 
 import { useParams, usePathname, useRouter } from 'next/navigation';
-import { AppProvider, useApp } from '../lib/store';
+import { useApp } from '../lib/store';
 import type { StudentId } from '../lib/types';
 
 const navItems = [
@@ -142,9 +142,5 @@ function StudentLayoutContent({ children }: { children: React.ReactNode }) {
 }
 
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <AppProvider>
-      <StudentLayoutContent>{children}</StudentLayoutContent>
-    </AppProvider>
-  );
+  return <StudentLayoutContent>{children}</StudentLayoutContent>;
 }

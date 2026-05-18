@@ -17,4 +17,6 @@ export const defaultData: AppData = {
   ],
   sessions: [],
   homework: [],
+  homeworkHistory: [],
+  exemptDates: [],
 };

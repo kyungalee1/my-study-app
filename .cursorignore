@@ -1,0 +1,27 @@
+# 의존성 및 빌드 파일 무시
+node_modules/
+.next/
+dist/
+build/
+out/
+
+# Supabase 관련 로컬 파일 및 가상환경 무시
+.supabase/
+supabase/.temp/
+.venv/
+venv/
+env/
+
+# 환경 변수 및 대용량 파일 무시
+.env*
+*.log
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.svg
+
+# Git 및 에디터 설정 무시
+.git/
+.vscode/
+.idea/

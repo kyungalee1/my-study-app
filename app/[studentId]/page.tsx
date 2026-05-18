@@ -4,6 +4,8 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useApp } from '../lib/store';
 import { db } from '../lib/supabase';
 import type { StudentId } from '../lib/types';
+import { getHomeworkStateForDate } from '../lib/homeworkHistory';
+import { isDailyHomeworkExempt } from '../lib/exemptDates';
 import { useState, useEffect, Suspense } from 'react';
 
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'] as const;
@@ -65,39 +67,80 @@ function DashboardContent() {
 
   const student = data.students.find(s => s.id === studentId);
   const homework = getStudentHomework(studentId);
+  const homeworkHistory = data.homeworkHistory ?? [];
+  const exemptDates = data.exemptDates ?? [];
   if (!student) return null;
 
   const todayStr = toLocalStr(new Date());
   const viewDate = searchParams.get('date') ?? todayStr;
   const isToday = viewDate === todayStr;
+  const viewExempt = isDailyHomeworkExempt(viewDate, exemptDates);
+  const viewExemptLabel = exemptDates.find(e => e.date === viewDate)?.label;
   const viewDateObj = new Date(viewDate + 'T12:00:00');
   const viewDayLabel = DAY_LABELS[viewDateObj.getDay()];
   const viewDateDisplay = `${viewDateObj.getMonth() + 1}월 ${viewDateObj.getDate()}일 (${DAY_LABELS[viewDateObj.getDay()]})`;
 
-  function isDone(h: typeof homework[number]) {
-    return h.isDaily ? h.completedDates.includes(viewDate) : h.completed;
-  }
-  function isScheduledOnDate(h: typeof homework[number]): boolean {
-    const created = toLocalStr(new Date(h.createdAt));
-    if (!h.isDaily) return created === viewDate;
-    if (created > viewDate) return false;
-    if (h.scheduledDays.length === 0 || h.scheduledDays.includes('매일')) return true;
-    return h.scheduledDays.includes(viewDayLabel);
-  }
+  type ViewHwItem = {
+    id: string;
+    title: string;
+    isDaily: boolean;
+    done: boolean;
+    subjectId: string | null;
+    scheduledDays: string[];
+  };
 
-  const viewHomework = homework.filter(h => isScheduledOnDate(h));
-  const pendingHw = viewHomework.filter(h => !isDone(h));
-  const completedHw = viewHomework.filter(h => isDone(h));
+  const dayState = getHomeworkStateForDate(
+    studentId,
+    homework,
+    homeworkHistory,
+    viewDate,
+    todayStr,
+    data.students,
+  );
 
-  function toggleHomework(item: typeof homework[number]) {
+  const viewHomework: ViewHwItem[] = isToday
+    ? homework
+        .filter(h => {
+          const created = toLocalStr(new Date(h.createdAt));
+          if (!h.isDaily) return created === viewDate;
+          if (created > viewDate) return false;
+          if (h.scheduledDays.length === 0 || h.scheduledDays.includes('매일')) return true;
+          return h.scheduledDays.includes(viewDayLabel);
+        })
+        .map(h => ({
+          id: h.id,
+          title: h.title,
+          isDaily: h.isDaily,
+          done: h.isDaily ? h.completedDates.includes(viewDate) : h.completed,
+          subjectId: h.subjectId,
+          scheduledDays: h.scheduledDays,
+        }))
+    : dayState.map(s => {
+        const live = homework.find(h => h.id === s.id);
+        return {
+          id: s.id,
+          title: s.title,
+          isDaily: s.isDaily,
+          done: s.done,
+          subjectId: live?.subjectId ?? null,
+          scheduledDays: s.scheduledDays,
+        };
+      });
+
+  const pendingHw = viewHomework.filter(h => !h.done);
+  const completedHw = viewHomework.filter(h => h.done);
+
+  function toggleHomework(item: ViewHwItem) {
     if (!isToday) return;
-    if (item.isDaily) {
-      const newDates = item.completedDates.includes(todayStr)
-        ? item.completedDates.filter(d => d !== todayStr)
-        : [...item.completedDates, todayStr];
-      updateHomework(item.id, { completedDates: newDates });
+    const live = homework.find(h => h.id === item.id);
+    if (!live) return;
+    if (live.isDaily) {
+      const newDates = live.completedDates.includes(todayStr)
+        ? live.completedDates.filter(d => d !== todayStr)
+        : [...live.completedDates, todayStr];
+      updateHomework(live.id, { completedDates: newDates });
     } else {
-      updateHomework(item.id, { completed: true });
+      updateHomework(live.id, { completed: !live.completed });
     }
   }
 
@@ -166,6 +209,17 @@ function DashboardContent() {
       </div>
 
       <div className="px-3 py-3 space-y-3">
+        {viewExempt && (
+          <div className="rounded-xl px-3 py-2.5" style={{ background: '#E0F2FE', border: '1px solid #BAE6FD' }}>
+            <p className="font-bold" style={{ fontSize: 12, color: '#0369A1' }}>
+              🏖️ 매일 숙제 면제일{viewExemptLabel ? ` · ${viewExemptLabel}` : ''}
+            </p>
+            <p style={{ fontSize: 11, color: '#0284C7', marginTop: 3 }}>
+              -500원 패널티가 적용되지 않아요.
+            </p>
+          </div>
+        )}
+
         {/* 과거 안내 */}
         {!isToday && (
           <div className="rounded-xl px-3 py-2 flex items-center gap-2" style={{ background: '#FEF3C7' }}>

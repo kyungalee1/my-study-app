@@ -1,9 +1,20 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import type { AppData, Student, Subject, StudySession, HomeworkItem, StudentId } from './types';
+import type { AppData, Student, Subject, StudySession, HomeworkItem, HomeworkHistoryRecord, ExemptDate, StudentId } from './types';
 import { defaultData } from './defaults';
 import { db } from './supabase';
+import {
+  collectArchiveOnDelete,
+  collectPastSnapshots,
+  encodeScheduledDays,
+  decodeScheduledDays,
+  recoverHistoryFromEmotionIds,
+  buildHardcodedHistoryRecords,
+  snapshotFromHomework,
+} from './homeworkHistory';
+import { loadExemptDatesLocal, mergeExemptDates, saveExemptDatesLocal } from './exemptDates';
+import { isBeforeServiceStart, SERVICE_START_DATE } from './serviceConfig';
 
 // ─── DB Row Types (snake_case) ────────────────────────────────────────────────
 
@@ -54,6 +65,24 @@ interface HomeworkRow {
   due_date: string | null;
   completed: boolean;
   created_at: string;
+}
+interface ExemptDateRow {
+  date: string;
+  label: string;
+  created_at: string;
+}
+interface HomeworkHistoryRow {
+  id: string;
+  homework_id: string;
+  student_id: string;
+  subject_id: string | null;
+  title: string;
+  date: string;
+  is_daily: boolean;
+  completed: boolean;
+  scheduled_days: string;
+  homework_created_at: string;
+  archived_at: string;
 }
 
 // ─── Converters ───────────────────────────────────────────────────────────────
@@ -162,15 +191,55 @@ function homeworkToRow(h: HomeworkItem): HomeworkRow {
   };
 }
 
+function rowToHomeworkHistory(r: HomeworkHistoryRow): HomeworkHistoryRecord {
+  return {
+    id: r.id,
+    homeworkId: r.homework_id,
+    studentId: r.student_id as StudentId,
+    subjectId: r.subject_id,
+    title: r.title,
+    date: r.date,
+    isDaily: r.is_daily,
+    completed: r.completed,
+    scheduledDays: decodeScheduledDays(r.scheduled_days),
+    homeworkCreatedAt: r.homework_created_at,
+    archivedAt: r.archived_at,
+  };
+}
+function rowToExemptDate(r: ExemptDateRow): ExemptDate {
+  return { date: r.date, label: r.label };
+}
+function exemptDateToRow(e: ExemptDate): ExemptDateRow {
+  return { date: e.date, label: e.label, created_at: new Date().toISOString() };
+}
+
+function homeworkHistoryToRow(h: HomeworkHistoryRecord): HomeworkHistoryRow {
+  return {
+    id: h.id,
+    homework_id: h.homeworkId,
+    student_id: h.studentId,
+    subject_id: h.subjectId,
+    title: h.title,
+    date: h.date,
+    is_daily: h.isDaily,
+    completed: h.completed,
+    scheduled_days: encodeScheduledDays(h.scheduledDays),
+    homework_created_at: h.homeworkCreatedAt,
+    archived_at: h.archivedAt,
+  };
+}
+
 // ─── Supabase Helpers ─────────────────────────────────────────────────────────
 
 async function loadFromSupabase(): Promise<AppData | null> {
   if (!db) return null;
-  const [studentsRes, subjectsRes, sessionsRes, homeworkRes] = await Promise.all([
+  const [studentsRes, subjectsRes, sessionsRes, homeworkRes, historyRes, exemptRes] = await Promise.all([
     db.from('students').select('*'),
     db.from('subjects').select('*'),
     db.from('sessions').select('*'),
     db.from('homework').select('*').order('created_at', { ascending: true }),
+    db.from('homework_history').select('*'),
+    db.from('exempt_dates').select('*').order('date', { ascending: true }),
   ]);
   if (studentsRes.error) throw studentsRes.error;
   if (!studentsRes.data || studentsRes.data.length === 0) return null;
@@ -179,6 +248,12 @@ async function loadFromSupabase(): Promise<AppData | null> {
     subjects: ((subjectsRes.data ?? []) as SubjectRow[]).map(rowToSubject),
     sessions: ((sessionsRes.data ?? []) as SessionRow[]).map(rowToSession),
     homework: ((homeworkRes.data ?? []) as HomeworkRow[]).map(rowToHomework),
+    homeworkHistory: historyRes.error
+      ? []
+      : ((historyRes.data ?? []) as HomeworkHistoryRow[]).map(rowToHomeworkHistory),
+    exemptDates: exemptRes.error
+      ? []
+      : ((exemptRes.data ?? []) as ExemptDateRow[]).map(rowToExemptDate),
   };
 }
 
@@ -189,6 +264,12 @@ async function seedToSupabase(data: AppData) {
   if (data.subjects.length > 0) await db.from('subjects').upsert(data.subjects.map(subjectToRow));
   if (data.sessions.length > 0)  await db.from('sessions').upsert(data.sessions.map(sessionToRow));
   if (data.homework.length > 0)  await db.from('homework').upsert(data.homework.map(homeworkToRow));
+  if (data.homeworkHistory.length > 0) {
+    await db.from('homework_history').upsert(data.homeworkHistory.map(homeworkHistoryToRow));
+  }
+  if (data.exemptDates.length > 0) {
+    await db.from('exempt_dates').upsert(data.exemptDates.map(exemptDateToRow));
+  }
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -207,6 +288,8 @@ interface AppContextValue {
   deleteHomework: (id: string) => void;
   clearDateData: (date: string) => void;
   removeCompletedDate: (date: string) => void;
+  addExemptDate: (item: ExemptDate) => void;
+  removeExemptDate: (date: string) => void;
   getStudentSubjects: (studentId: StudentId) => Subject[];
   getWeekSessions: (studentId: StudentId) => StudySession[];
   getTodaySessions: (studentId: StudentId) => StudySession[];
@@ -243,59 +326,120 @@ function getMonthStart(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 }
 
-/**
- * 오래된 데이터를 자동 정리한다.
- * - 오늘만 숙제(isDaily=false): 이번 달 이전 항목 삭제 (이달 누적 포인트 계산을 위해 이달 것은 보존)
- * - 학습 세션: 이번 달 이전 항목 삭제
- * - 매일 숙제(isDaily=true): 영구 보존, 단 completedDates 중 이번 달 이전 날짜 제거
- */
-async function cleanupOldData(loadedData: AppData): Promise<AppData> {
+/** 서비스 시작(5/14) 이전 숙제·완료 기록 제거 */
+async function purgePreServiceData(loadedData: AppData): Promise<AppData> {
+  const preHistory = (loadedData.homeworkHistory ?? []).filter(h => isBeforeServiceStart(h.date));
+  const preHistoryIds = preHistory.map(h => h.id);
+
+  const homework = loadedData.homework
+    .filter(h => {
+      if (!h.isDaily && isBeforeServiceStart(localDateOf(h.createdAt))) return false;
+      return true;
+    })
+    .map(h => ({
+      ...h,
+      completedDates: h.isDaily
+        ? h.completedDates.filter(d => !isBeforeServiceStart(d))
+        : h.completedDates,
+    }));
+
+  const homeworkHistory = (loadedData.homeworkHistory ?? []).filter(h => !isBeforeServiceStart(h.date));
+
+  if (db) {
+    if (preHistoryIds.length > 0) {
+      const { error } = await db.from('homework_history').delete().in('id', preHistoryIds);
+      if (error) console.warn('purgePreServiceData(history):', error);
+    }
+    for (const hw of homework) {
+      const original = loadedData.homework.find(h => h.id === hw.id);
+      if (!original || !hw.isDaily) continue;
+      if (original.completedDates.join(';') === hw.completedDates.join(';')) continue;
+      const { error } = await db.from('homework').update({
+        due_date: encodeDueDate(hw.isDaily, hw.completedDates, hw.dueDate, hw.scheduledDays),
+      }).eq('id', hw.id);
+      if (error) console.warn('purgePreServiceData(homework):', error);
+    }
+    const deletedOneday = loadedData.homework.filter(
+      h => !h.isDaily && isBeforeServiceStart(localDateOf(h.createdAt)),
+    );
+    if (deletedOneday.length > 0) {
+      const { error } = await db.from('homework').delete().in('id', deletedOneday.map(h => h.id));
+      if (error) console.warn('purgePreServiceData(delete oneday):', error);
+    }
+  }
+
+  if (preHistoryIds.length > 0) {
+    console.info(`서비스 시작(${SERVICE_START_DATE}) 이전 기록 ${preHistoryIds.length}건을 제거했습니다.`);
+  }
+
+  return { ...loadedData, homework, homeworkHistory };
+}
+
+/** 이번 달 이전 학습 세션만 정리 (숙제·완료 기록은 homework_history에 보존) */
+async function cleanupOldSessions(loadedData: AppData): Promise<AppData> {
   const monthStart = getMonthStart();
-
-  // 오늘만 숙제: 이번 달 이전에 만들어진 항목 삭제
-  const oldOneTimeIds = loadedData.homework
-    .filter(h => !h.isDaily && localDateOf(h.createdAt) < monthStart)
-    .map(h => h.id);
-
   const oldSessionIds = loadedData.sessions
     .filter(s => s.date < monthStart)
     .map(s => s.id);
 
-  // 매일 숙제: completedDates에서 이번 달 이전 날짜 + 수동 지정 삭제 날짜 제거
-  const REMOVE_DATES = ['2026-05-13']; // 잘못 기록된 완료 날짜 목록
-  const dailyToUpdate: HomeworkItem[] = [];
-  const hwWithTrimmedDates = loadedData.homework.map(h => {
-    if (!h.isDaily) return h;
-    const filtered = h.completedDates.filter(
-      d => d >= monthStart && !REMOVE_DATES.includes(d)
-    );
-    if (filtered.length === h.completedDates.length) return h;
-    const trimmed = { ...h, completedDates: filtered };
-    dailyToUpdate.push(trimmed);
-    return trimmed;
-  });
-
-  if (db) {
-    if (oldOneTimeIds.length > 0) {
-      const { error } = await db.from('homework').delete().in('id', oldOneTimeIds);
-      if (error) console.warn('cleanupOldData(homework):', error);
-    }
-    if (oldSessionIds.length > 0) {
-      const { error } = await db.from('sessions').delete().in('id', oldSessionIds);
-      if (error) console.warn('cleanupOldData(sessions):', error);
-    }
-    // 날짜가 잘린 daily 숙제 DB 업데이트
-    for (const hw of dailyToUpdate) {
-      await db.from('homework').update({
-        due_date: encodeDueDate(hw.isDaily, hw.completedDates, hw.dueDate, hw.scheduledDays),
-      }).eq('id', hw.id);
-    }
+  if (db && oldSessionIds.length > 0) {
+    const { error } = await db.from('sessions').delete().in('id', oldSessionIds);
+    if (error) console.warn('cleanupOldSessions:', error);
   }
 
   return {
     ...loadedData,
-    homework: hwWithTrimmedDates.filter(h => !oldOneTimeIds.includes(h.id)),
     sessions: loadedData.sessions.filter(s => !oldSessionIds.includes(s.id)),
+  };
+}
+
+/** 과거 완료 날짜를 homework_history에 복사(백업). live completedDates는 유지한다. */
+async function migrateHomeworkToHistory(loadedData: AppData): Promise<AppData> {
+  const todayStr = toDateStr(new Date());
+  const newSnapshots = collectPastSnapshots(
+    loadedData.homework,
+    todayStr,
+    loadedData.homeworkHistory ?? [],
+  );
+
+  const homeworkHistory = [...(loadedData.homeworkHistory ?? []), ...newSnapshots];
+
+  if (db && newSnapshots.length > 0) {
+    const { error } = await db.from('homework_history').upsert(newSnapshots.map(homeworkHistoryToRow));
+    if (error) console.warn('migrateHomeworkToHistory(insert):', error);
+  }
+
+  return { ...loadedData, homeworkHistory };
+}
+
+/** emotions 테이블에서 사라진 과거 완료 기록 복구 */
+async function recoverMissingHistoryFromEmotions(loadedData: AppData): Promise<AppData> {
+  if (!db) return loadedData;
+  const todayStr = toDateStr(new Date());
+  const { data: emotions, error } = await db.from('emotions').select('id');
+  if (error || !emotions?.length) return loadedData;
+
+  const emotionIds = (emotions as { id: string }[]).map(e => e.id);
+  const recovered = recoverHistoryFromEmotionIds(
+    loadedData.homework,
+    emotionIds,
+    loadedData.homeworkHistory ?? [],
+    todayStr,
+  );
+  if (recovered.length === 0) return loadedData;
+
+  const { error: upsertErr } = await db
+    .from('homework_history')
+    .upsert(recovered.map(homeworkHistoryToRow));
+  if (upsertErr) {
+    console.warn('recoverMissingHistoryFromEmotions:', upsertErr);
+    return loadedData;
+  }
+
+  console.info(`과거 숙제 기록 ${recovered.length}건을 emotions에서 복구했습니다.`);
+  return {
+    ...loadedData,
+    homeworkHistory: [...(loadedData.homeworkHistory ?? []), ...recovered],
   };
 }
 
@@ -322,8 +466,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           await seedToSupabase(seedData);
           loaded = seedData;
         }
-        // 이번 달 이전 불필요 데이터 자동 정리
-        loaded = await cleanupOldData(loaded);
+        const localExempt = loadExemptDatesLocal();
+        const mergedExempt = mergeExemptDates(loaded.exemptDates ?? [], localExempt);
+        loaded = {
+          ...loaded,
+          homeworkHistory: loaded.homeworkHistory ?? [],
+          exemptDates: mergedExempt,
+        };
+        saveExemptDatesLocal(mergedExempt);
+        if (db && mergedExempt.length > 0) {
+          db.from('exempt_dates').upsert(mergedExempt.map(exemptDateToRow))
+            .then(({ error }) => { if (error) console.warn('exempt_dates upsert:', error); });
+        }
+        loaded = await purgePreServiceData(loaded);
+        loaded = await migrateHomeworkToHistory(loaded);
+        const hardcodedHistory = buildHardcodedHistoryRecords(
+          loaded.students,
+          loaded.homework,
+          loaded.homeworkHistory ?? [],
+        );
+        if (hardcodedHistory.length > 0) {
+          loaded = {
+            ...loaded,
+            homeworkHistory: [...(loaded.homeworkHistory ?? []), ...hardcodedHistory],
+          };
+          if (db) {
+            await db.from('homework_history').upsert(hardcodedHistory.map(homeworkHistoryToRow));
+          }
+        }
+        loaded = await recoverMissingHistoryFromEmotions(loaded);
+        loaded = await cleanupOldSessions(loaded);
         setData(loaded);
       } catch (err) {
         // Supabase 연결 실패 시 localStorage 폴백
@@ -331,18 +503,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         try {
           const stored = localStorage.getItem('study-app-data');
           if (stored) {
-            const fallback: AppData = { ...defaultData, ...JSON.parse(stored) };
-            // localStorage 폴백에서도 오래된 데이터 정리 (DB 삭제 없이 메모리만)
-            const monthStart = getMonthStart();
+            const parsed = JSON.parse(stored) as AppData;
+            const fallback: AppData = {
+              ...defaultData,
+              ...parsed,
+              homeworkHistory: parsed.homeworkHistory ?? [],
+              exemptDates: parsed.exemptDates ?? [],
+            };
+            const todayStr = toDateStr(new Date());
+            const purged = await purgePreServiceData(fallback);
+            const snapshots = collectPastSnapshots(purged.homework, todayStr, purged.homeworkHistory);
+            const mergedExempt = mergeExemptDates(
+              fallback.exemptDates ?? [],
+              loadExemptDatesLocal(),
+            );
+            saveExemptDatesLocal(mergedExempt);
             setData({
-              ...fallback,
-              homework: fallback.homework
-                .filter(h => h.isDaily || localDateOf(h.createdAt) >= monthStart)
-                .map(h => {
-                  if (!h.isDaily) return h;
-                  return { ...h, completedDates: (h.completedDates ?? []).filter(d => d >= monthStart) };
-                }),
-              sessions: fallback.sessions.filter(s => s.date >= monthStart),
+              ...purged,
+              exemptDates: mergedExempt,
+              homeworkHistory: [...purged.homeworkHistory, ...snapshots],
+              sessions: purged.sessions.filter(s => s.date >= getMonthStart()),
             });
           }
         } catch { /* ignore */ }
@@ -427,37 +607,101 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const updateHomework = useCallback((id: string, updates: Partial<HomeworkItem>) => {
     setData(prev => {
-      const next = { ...prev, homework: prev.homework.map(h => h.id === id ? { ...h, ...updates } : h) };
+      const todayStr = toDateStr(new Date());
+      const original = prev.homework.find(h => h.id === id);
+      if (!original) return prev;
+
+      let historyUpdates: HomeworkHistoryRecord[] = [];
+      let liveUpdates = { ...updates };
+
+      // completedDates 변경: 실제로 바뀐 날짜만 반영 (과거는 history, 오늘 이후는 live)
+      if ('completedDates' in updates && updates.completedDates) {
+        const newDates = updates.completedDates;
+        const changedDates = new Set<string>();
+        for (const d of original.completedDates) {
+          if (!newDates.includes(d)) changedDates.add(d);
+        }
+        for (const d of newDates) {
+          if (!original.completedDates.includes(d)) changedDates.add(d);
+        }
+        for (const date of changedDates) {
+          if (date >= todayStr) continue;
+          const done = newDates.includes(date);
+          historyUpdates.push(snapshotFromHomework(original, date, done));
+        }
+        liveUpdates = {
+          ...liveUpdates,
+          completedDates: newDates.filter(d => d >= todayStr),
+        };
+      }
+
+      const merged = { ...original, ...liveUpdates };
+      const nextHomework = prev.homework.map(h => h.id === id ? merged : h);
+      let nextHistory = prev.homeworkHistory ?? [];
+
+      if (historyUpdates.length > 0) {
+        const byId = new Map(nextHistory.map(h => [h.id, h]));
+        for (const snap of historyUpdates) byId.set(snap.id, snap);
+        nextHistory = Array.from(byId.values());
+        if (db) {
+          db.from('homework_history').upsert(historyUpdates.map(homeworkHistoryToRow))
+            .then(({ error }) => { if (error) console.error('updateHomework(history):', error); });
+        }
+      }
+
       if (db) {
-        const updatedItem = next.homework.find(h => h.id === id)!;
         const dbUpdates: Partial<HomeworkRow> = {};
-        if ('completed' in updates) dbUpdates.completed  = updates.completed;
-        if ('title'     in updates) dbUpdates.title       = updates.title;
-        if ('subjectId' in updates) dbUpdates.subject_id  = updates.subjectId ?? null;
-        // isDaily, completedDates, dueDate, scheduledDays 중 하나라도 변경되면 due_date 재인코딩
-        if ('isDaily' in updates || 'completedDates' in updates || 'dueDate' in updates || 'scheduledDays' in updates) {
+        if ('completed' in liveUpdates) dbUpdates.completed = liveUpdates.completed;
+        if ('title' in liveUpdates) dbUpdates.title = liveUpdates.title;
+        if ('subjectId' in liveUpdates) dbUpdates.subject_id = liveUpdates.subjectId ?? null;
+        if (
+          'isDaily' in liveUpdates ||
+          'completedDates' in liveUpdates ||
+          'dueDate' in liveUpdates ||
+          'scheduledDays' in liveUpdates
+        ) {
           dbUpdates.due_date = encodeDueDate(
-            updatedItem.isDaily,
-            updatedItem.completedDates,
-            updatedItem.dueDate,
-            updatedItem.scheduledDays,
+            merged.isDaily,
+            merged.completedDates,
+            merged.dueDate,
+            merged.scheduledDays,
           );
         }
-        db.from('homework').update(dbUpdates).eq('id', id)
-          .then(({ error }) => { if (error) console.error('updateHomework:', error); });
+        if (Object.keys(dbUpdates).length > 0) {
+          db.from('homework').update(dbUpdates).eq('id', id)
+            .then(({ error }) => { if (error) console.error('updateHomework:', error); });
+        }
       }
-      return next;
+
+      return { ...prev, homework: nextHomework, homeworkHistory: nextHistory };
     });
   }, []);
 
   const deleteHomework = useCallback((id: string) => {
     setData(prev => {
-      const next = { ...prev, homework: prev.homework.filter(h => h.id !== id) };
+      const item = prev.homework.find(h => h.id === id);
+      if (!item) return prev;
+
+      const todayStr = toDateStr(new Date());
+      const archiveSnaps = collectArchiveOnDelete(item, todayStr, prev.homeworkHistory ?? []);
+      const byId = new Map((prev.homeworkHistory ?? []).map(h => [h.id, h]));
+      for (const snap of archiveSnaps) byId.set(snap.id, snap);
+      const nextHistory = Array.from(byId.values());
+
       if (db) {
+        if (archiveSnaps.length > 0) {
+          db.from('homework_history').upsert(archiveSnaps.map(homeworkHistoryToRow))
+            .then(({ error }) => { if (error) console.error('deleteHomework(history):', error); });
+        }
         db.from('homework').delete().eq('id', id)
           .then(({ error }) => { if (error) console.error('deleteHomework:', error); });
       }
-      return next;
+
+      return {
+        ...prev,
+        homework: prev.homework.filter(h => h.id !== id),
+        homeworkHistory: nextHistory,
+      };
     });
   }, []);
 
@@ -468,6 +712,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    */
   const clearDateData = useCallback((date: string) => {
     setData(prev => {
+      const todayStr = toDateStr(new Date());
+      const historySnaps: HomeworkHistoryRecord[] = [];
+
+      if (date < todayStr) {
+        for (const hw of prev.homework) {
+          if (!hw.isDaily) {
+            if (localDateOf(hw.createdAt) !== date) continue;
+            historySnaps.push(snapshotFromHomework(hw, date, true));
+            continue;
+          }
+          historySnaps.push(snapshotFromHomework(hw, date, true));
+        }
+        const byId = new Map((prev.homeworkHistory ?? []).map(h => [h.id, h]));
+        for (const snap of historySnaps) byId.set(snap.id, snap);
+        if (db && historySnaps.length > 0) {
+          db.from('homework_history').upsert(historySnaps.map(homeworkHistoryToRow))
+            .then(({ error }) => { if (error) console.error('clearDateData(history):', error); });
+        }
+        return { ...prev, homeworkHistory: Array.from(byId.values()) };
+      }
+
       const onedayToDelete = prev.homework
         .filter(h => !h.isDaily && localDateOf(h.createdAt) === date)
         .map(h => h.id);
@@ -476,7 +741,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         .filter(h => !onedayToDelete.includes(h.id))
         .map(h => {
           if (!h.isDaily) return h;
-          // 해당 날짜를 completedDates에 추가(패널티 제거), 이미 있으면 유지
           if (h.completedDates.includes(date)) return h;
           return { ...h, completedDates: [...h.completedDates, date] };
         });
@@ -502,8 +766,57 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /** 특정 날짜를 모든 매일 숙제의 completedDates에서 제거 (잘못된 완료 기록 삭제용) */
+  const addExemptDate = useCallback((item: ExemptDate) => {
+    setData(prev => {
+      if (prev.exemptDates.some(e => e.date === item.date)) return prev;
+      const next = {
+        ...prev,
+        exemptDates: [...prev.exemptDates, item].sort((a, b) => a.date.localeCompare(b.date)),
+      };
+      saveExemptDatesLocal(next.exemptDates);
+      if (db) {
+        db.from('exempt_dates').upsert(exemptDateToRow(item))
+          .then(({ error }) => { if (error) console.error('addExemptDate:', error); });
+      }
+      return next;
+    });
+  }, []);
+
+  const removeExemptDate = useCallback((date: string) => {
+    setData(prev => {
+      const next = { ...prev, exemptDates: prev.exemptDates.filter(e => e.date !== date) };
+      saveExemptDatesLocal(next.exemptDates);
+      if (db) {
+        db.from('exempt_dates').delete().eq('date', date)
+          .then(({ error }) => { if (error) console.error('removeExemptDate:', error); });
+      }
+      return next;
+    });
+  }, []);
+
   const removeCompletedDate = useCallback((date: string) => {
     setData(prev => {
+      const todayStr = toDateStr(new Date());
+
+      if (date < todayStr) {
+        const historySnaps: HomeworkHistoryRecord[] = [];
+        for (const hw of prev.homework.filter(h => h.isDaily)) {
+          const existing = (prev.homeworkHistory ?? []).find(
+            h => h.homeworkId === hw.id && h.date === date,
+          );
+          if (existing) {
+            historySnaps.push({ ...existing, completed: false, archivedAt: new Date().toISOString() });
+          }
+        }
+        const byId = new Map((prev.homeworkHistory ?? []).map(h => [h.id, h]));
+        for (const snap of historySnaps) byId.set(snap.id, snap);
+        if (db && historySnaps.length > 0) {
+          db.from('homework_history').upsert(historySnaps.map(homeworkHistoryToRow))
+            .then(({ error }) => { if (error) console.error('removeCompletedDate(history):', error); });
+        }
+        return { ...prev, homeworkHistory: Array.from(byId.values()) };
+      }
+
       const toUpdate: HomeworkItem[] = [];
       const updated = prev.homework.map(h => {
         if (!h.isDaily || !h.completedDates.includes(date)) return h;
@@ -551,6 +864,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addSubject, updateSubject, deleteSubject,
       addSession, deleteSession,
       addHomework, updateHomework, deleteHomework, clearDateData, removeCompletedDate,
+      addExemptDate, removeExemptDate,
       getStudentSubjects, getWeekSessions, getTodaySessions, getStudentHomework,
       todayString, weekStartString,
     }}>
