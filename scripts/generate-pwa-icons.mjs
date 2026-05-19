@@ -34,14 +34,14 @@ if (!existsSync(svgPath)) {
   console.log('✓ public/icons/icon.svg 준비');
 }
 
-const sourcePath = CANDIDATES.find(p => existsSync(p));
+let sourcePath = CANDIDATES.find(p => existsSync(p));
 if (!sourcePath) {
-  console.error('아이콘 원본을 찾을 수 없습니다.');
-  process.exit(1);
+  writeFileSync(svgPath, DEFAULT_OWL_SVG, 'utf8');
+  sourcePath = svgPath;
+  console.log('✓ 기본 부엉이 SVG로 대체');
 }
 
 const SIZES = [72, 96, 128, 144, 152, 180, 192, 384, 512];
-const THEME = '#3182F6';
 
 console.log(`원본: ${sourcePath}\n`);
 
@@ -51,7 +51,4 @@ for (const size of SIZES) {
   console.log(`✓ ${name}`);
 }
 
-// maskable 아이콘은 Android에서 깨져 검은 삼각형으로 보일 수 있어 생성하지 않음.
-// PWA 아이콘은 app/icon.tsx, app/apple-icon.tsx (배포 시 자동 생성) 사용.
-console.log('\n완료: public/icons/ (레거시 PNG)');
-console.log('PWA 설치 아이콘: /icon, /apple-icon (Next.js 자동 생성)');
+console.log('\n완료: public/icons/ → manifest /icons/icon-*.png');

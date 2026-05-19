@@ -70,3 +70,108 @@ body {
 .animate-fadein { animation: fadeIn 0.3s ease both; }
 .animate-scalein { animation: scaleIn 0.25s ease both; }
 .animate-slideup { animation: slideUp 0.35s ease both; }
+
+/* iOS 홈 화면 추가 안내 배너 */
+.ios-install-banner {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  background: rgba(25, 31, 40, 0.45);
+  backdrop-filter: blur(4px);
+}
+
+.ios-install-banner__card {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  padding: 20px 20px 16px;
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.ios-install-banner__close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text-sub);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ios-install-banner__icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.ios-install-banner__title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 10px;
+  padding-right: 28px;
+  line-height: 1.35;
+}
+
+.ios-install-banner__desc {
+  font-size: 14px;
+  color: var(--text-sub);
+  margin: 0 0 16px;
+  line-height: 1.55;
+}
+
+.ios-install-banner__steps {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--text-sub);
+  line-height: 1.6;
+}
+
+.ios-install-banner__steps li {
+  margin-bottom: 6px;
+}
+
+.ios-install-banner__steps strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ios-install-banner__share-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0 2px;
+  border-radius: 6px;
+  background: var(--primary-light);
+  color: var(--primary);
+  vertical-align: middle;
+}
+
+.ios-install-banner__btn {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 14px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ios-install-banner__btn:active {
+  opacity: 0.9;
+}
