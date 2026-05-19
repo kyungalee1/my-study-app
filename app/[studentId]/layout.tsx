@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useApp } from '../lib/store';
+import { isReservedStudentSlug } from '../lib/reservedRoutes';
 import type { StudentId } from '../lib/types';
 
 const navItems = [
@@ -113,7 +115,22 @@ function BottomNav({ studentId }: { studentId: StudentId }) {
 function StudentLayoutContent({ children }: { children: React.ReactNode }) {
   const params = useParams();
   const studentId = params.studentId as StudentId;
-  const { loading } = useApp();
+  const router = useRouter();
+  const { loading, data } = useApp();
+
+  const slug = String(params.studentId ?? '');
+  const reserved = isReservedStudentSlug(slug);
+  const validStudent = data.students.some(s => s.id === studentId);
+
+  useEffect(() => {
+    if (!loading && (reserved || !validStudent)) {
+      router.replace('/');
+    }
+  }, [loading, reserved, validStudent, router]);
+
+  if (reserved || (!loading && !validStudent)) {
+    return null;
+  }
 
   if (loading) {
     return (

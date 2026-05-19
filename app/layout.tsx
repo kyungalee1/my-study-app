@@ -8,6 +8,10 @@ export const metadata: Metadata = {
   title: "공부 관리",
   description: "두 아이를 위한 스마트 학습 관리 앱",
   applicationName: "공부 관리",
+  icons: {
+    icon: [{ url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
