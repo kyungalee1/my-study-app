@@ -1,10 +1,28 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
+import { RegisterServiceWorker } from "./register-sw";
+import { IosInstallBanner } from "./ios-install-banner";
 
 export const metadata: Metadata = {
   title: "공부 관리",
   description: "두 아이를 위한 스마트 학습 관리 앱",
+  applicationName: "공부 관리",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "공부관리",
+  },
+  formatDetection: {
+    telephone: false,
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#3182F6",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -15,7 +33,11 @@ export default function RootLayout({
   return (
     <html lang="ko" className="h-full">
       <body className="min-h-full">
-        <Providers>{children}</Providers>
+        <RegisterServiceWorker />
+        <Providers>
+          {children}
+          <IosInstallBanner />
+        </Providers>
       </body>
     </html>
   );
